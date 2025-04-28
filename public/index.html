@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MCP管理界面</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+  <div class="app-container">
+    <header>
+      <h1>MCP管理界面</h1>
+      <div class="session-info">
+        <span id="session-id-display">未连接</span>
+        <button id="new-session-btn">新建会话</button>
+      </div>
+    </header>
+
+    <main>
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="add-mcp">添加MCP</button>
+        <button class="tab-btn" data-tab="list-mcp">已连接MCP <span id="mcp-count">0</span></button>
+        <button class="tab-btn" data-tab="chat">聊天</button>
+        <button class="tab-btn" data-tab="test-function-call">测试Function Call</button>
+      </div>
+
+      <div class="tab-content active" id="add-mcp">
+        <div class="form-container">
+          <h2>连接新的MCP服务</h2>
+
+          <div class="quick-add-section">
+            <label>快速添加常用MCP服务:</label>
+            <select id="preset-mcp-select">
+              <option value="">选择预设服务...</option>
+              <option value="amap-maps">高德地图 MCP</option>
+              <option value="stripe">Stripe MCP</option>
+              <option value="openai">OpenAI MCP</option>
+            </select>
+          </div>
+
+          <div class="divider">或者手动配置</div>
+
+          <div class="command-input-section">
+            <div class="divider">或者直接输入命令行</div>
+            <div class="form-group">
+              <label for="command-line-input">输入MCP启动命令 (例如: npx -y @amap/amap-maps-mcp-server
+                --AMAP_MAPS_API_KEY=xxx)</label>
+              <input type="text" id="command-line-input" placeholder="npx -y @mcp/server --API_KEY=your-key">
+              <button id="parse-command-btn">解析为配置</button>
+            </div>
+          </div>
+
+          <div class="config-paste-section">
+            <div class="divider">或者直接粘贴配置</div>
+            <div class="form-group">
+              <label for="config-json">直接输入或粘贴 MCP 配置 (JSON)</label>
+              <textarea id="config-json"
+                placeholder='{"mcpServers": {"your-server": {"command": "npx", "args": ["-y", "@your/server"], "env": {"API_KEY": "your-key"}}}}'
+                rows="10"></textarea>
+              <div class="json-actions">
+                <button id="validate-json-btn">校验JSON</button>
+                <button id="format-json-btn">格式化</button>
+                <button id="clear-json-btn">清除</button>
+                <button id="parse-config-btn">应用配置</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="server-name">名称 *</label>
+            <input type="text" id="server-name" placeholder="例如: Stripe" required>
+          </div>
+
+          <div class="form-group">
+            <label for="server-type">类型 *</label>
+            <select id="server-type">
+              <option value="stdio">stdio</option>
+              <option value="sse">sse</option>
+            </select>
+          </div>
+
+          <div class="form-group" id="command-group">
+            <label for="server-command">命令 *</label>
+            <input type="text" id="server-command" placeholder="例如: npx">
+          </div>
+
+          <div class="form-group" id="args-group">
+            <label for="server-args">参数 (每行一个)</label>
+            <textarea id="server-args" placeholder="例如:&#10;-y&#10;@stripe/mcp&#10;--api-key=YOUR_KEY"
+              rows="4"></textarea>
+          </div>
+
+          <div class="form-group" id="env-group">
+            <label for="server-env">环境变量 (每行一个键值对)</label>
+            <textarea id="server-env" placeholder="例如:&#10;STRIPE_API_KEY=sk_test_...&#10;STRIPE_ENV=test"
+              rows="4"></textarea>
+          </div>
+
+          <div class="form-group" id="url-group" style="display: none;">
+            <label for="server-url">服务URL *</label>
+            <input type="text" id="server-url" placeholder="例如: http://localhost:5000">
+          </div>
+
+          <div class="form-actions">
+            <button id="add-mcp-btn" disabled>添加MCP</button>
+          </div>
+
+          <div class="config-import-section">
+            <div class="divider">或者导入配置文件</div>
+            <div class="form-group">
+              <label for="config-file">导入 MCP 配置文件 (JSON)</label>
+              <input type="file" id="config-file" accept=".json">
+              <button id="import-config-btn">导入配置</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-content" id="list-mcp">
+        <div class="mcp-list-container">
+          <h2>已连接的MCP服务</h2>
+          <div id="mcp-list" class="mcp-list">
+            <!-- MCP项目将动态添加到这里 -->
+            <div class="empty-state" id="empty-state">
+              <p>暂无已连接的MCP</p>
+              <button class="add-first-mcp-btn">添加您的第一个MCP服务</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-content" id="chat">
+        <div class="chat-container">
+          <h2>与OpenAI聊天</h2>
+          <div class="chat-status">
+            <div class="status-label">状态:</div>
+            <div id="chat-status" class="status-value">等待连接MCP服务</div>
+          </div>
+
+          <div id="chat-messages" class="chat-messages">
+            <!-- 聊天消息将动态添加到这里 -->
+            <div class="system-message">请连接MCP服务并开始聊天</div>
+          </div>
+
+          <div class="chat-input-container">
+            <textarea id="chat-input" placeholder="在这里输入消息..." disabled></textarea>
+            <button id="send-message-btn" disabled>发送</button>
+            <button id="clear-chat-btn">清除聊天</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-content" id="test-function-call">
+        <div class="function-test-container">
+          <h2>测试OpenAI函数调用</h2>
+          <p class="description">使用此界面测试OpenAI的Function Call功能与MCP工具的集成。输入提示OpenAI调用工具的消息，查看结果。</p>
+
+          <div class="function-test-status">
+            <div class="status-label">MCP状态:</div>
+            <div id="function-test-status" class="status-value">等待连接MCP服务</div>
+          </div>
+
+          <div class="function-test-form">
+            <div class="form-group">
+              <label for="function-test-message">测试消息 (尝试请求使用工具)</label>
+              <textarea id="function-test-message" placeholder="例如：'生成一张猫的图片' 或 '翻译 Hello World 到中文'"
+                rows="3"></textarea>
+            </div>
+
+            <div class="form-actions">
+              <button id="run-function-test" disabled>运行测试</button>
+              <button id="clear-function-test">清除结果</button>
+            </div>
+          </div>
+
+          <div class="function-test-results">
+            <h3>测试结果:</h3>
+            <div id="function-test-output" class="function-test-output">
+              <!-- 结果将显示在这里 -->
+              <div class="system-message">请连接MCP服务并运行测试</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <div id="toast-container" class="toast-container"></div>
+  </div>
+
+  <template id="mcp-item-template">
+    <div class="mcp-item">
+      <div class="mcp-info">
+        <div class="mcp-name"></div>
+        <div class="mcp-type"></div>
+        <div class="mcp-status"></div>
+        <div class="mcp-tools"></div>
+      </div>
+      <div class="mcp-actions">
+        <button class="reconnect-btn" title="重新连接">
+          <svg viewBox="0 0 24 24" width="16" height="16">
+            <path
+              d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 10h7V3l-2.35 3.35z" />
+          </svg>
+        </button>
+        <button class="delete-btn" title="删除">
+          <svg viewBox="0 0 24 24" width="16" height="16">
+            <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  </template>
+
+  <template id="chat-message-template">
+    <div class="message">
+      <div class="message-header">
+        <span class="message-sender"></span>
+        <span class="message-time"></span>
+      </div>
+      <div class="message-content"></div>
+    </div>
+  </template>
+
+  <template id="function-call-template">
+    <div class="function-call">
+      <div class="function-header">
+        <span class="function-title">函数调用:</span>
+        <span class="function-name"></span>
+      </div>
+      <div class="function-params"></div>
+      <div class="function-result"></div>
+    </div>
+  </template>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="app.js"></script>
+</body>
+
+</html>

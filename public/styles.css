@@ -1,0 +1,900 @@
+/* 基础样式 */
+:root {
+  --primary-color: #4f46e5;
+  --primary-hover: #4338ca;
+  --success-color: #10b981;
+  --error-color: #ef4444;
+  --background-color: #f9fafb;
+  --foreground-color: #111827;
+  --card-background: #ffffff;
+  --border-color: #e5e7eb;
+  --muted-color: #6b7280;
+  --radius: 0.5rem;
+  --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell,
+    'Open Sans', 'Helvetica Neue', sans-serif;
+  background-color: var(--background-color);
+  color: var(--foreground-color);
+  line-height: 1.5;
+}
+
+.app-container {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+/* 头部 */
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.session-info {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+#session-id-display {
+  font-size: 0.875rem;
+  color: var(--muted-color);
+}
+
+/* 标签页 */
+.tabs {
+  display: flex;
+  margin-bottom: 1.5rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.tab-btn {
+  padding: 0.75rem 1.5rem;
+  border: none;
+  background: none;
+  color: var(--muted-color);
+  font-weight: 500;
+  cursor: pointer;
+  position: relative;
+}
+
+.tab-btn.active {
+  color: var(--primary-color);
+}
+
+.tab-btn.active::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background-color: var(--primary-color);
+}
+
+.tab-btn span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 50%;
+  font-size: 0.75rem;
+  background-color: var(--primary-color);
+  color: white;
+  margin-left: 0.5rem;
+}
+
+.tab-content {
+  display: none;
+}
+
+.tab-content.active {
+  display: block;
+}
+
+/* 表单样式 */
+.form-container {
+  background-color: var(--card-background);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1.5rem;
+}
+
+.form-container h2 {
+  margin-bottom: 1.5rem;
+  font-size: 1.25rem;
+}
+
+.form-group {
+  margin-bottom: 1.25rem;
+}
+
+label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--muted-color);
+}
+
+input,
+select {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  font-size: 1rem;
+  background-color: var(--background-color);
+}
+
+input:focus,
+select:focus {
+  outline: 2px solid var(--primary-color);
+  border-color: transparent;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: var(--radius);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s, transform 0.1s;
+}
+
+button:active {
+  transform: scale(0.98);
+}
+
+#add-mcp-btn,
+.add-first-mcp-btn {
+  background-color: var(--primary-color);
+  color: white;
+}
+
+#add-mcp-btn:hover,
+.add-first-mcp-btn:hover {
+  background-color: var(--primary-hover);
+}
+
+#add-mcp-btn:disabled {
+  background-color: var(--border-color);
+  cursor: not-allowed;
+}
+
+#new-session-btn {
+  background-color: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--foreground-color);
+}
+
+#new-session-btn:hover {
+  background-color: var(--background-color);
+}
+
+/* MCP列表 */
+.mcp-list-container {
+  background-color: var(--card-background);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1.5rem;
+}
+
+.mcp-list-container h2 {
+  margin-bottom: 1.5rem;
+  font-size: 1.25rem;
+}
+
+.mcp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 2rem 0;
+  color: var(--muted-color);
+}
+
+.mcp-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background-color: var(--background-color);
+}
+
+.mcp-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.mcp-name {
+  font-weight: 500;
+}
+
+.mcp-type,
+.mcp-status,
+.mcp-tools {
+  font-size: 0.875rem;
+  color: var(--muted-color);
+}
+
+.mcp-status.connected {
+  color: var(--success-color);
+}
+
+.mcp-status.failed {
+  color: var(--error-color);
+}
+
+.mcp-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.reconnect-btn,
+.delete-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  padding: 0;
+  background-color: var(--background-color);
+  border: 1px solid var(--border-color);
+}
+
+.reconnect-btn:hover,
+.delete-btn:hover {
+  background-color: var(--border-color);
+}
+
+.reconnect-btn svg,
+.delete-btn svg {
+  fill: var(--muted-color);
+}
+
+/* 工具按钮样式 */
+.mcp-tools-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.tool-button {
+  font-size: 0.75rem;
+  padding: 0.25rem 0.5rem;
+  background-color: var(--background-color);
+  border: 1px solid var(--primary-color);
+  color: var(--primary-color);
+  border-radius: var(--radius);
+}
+
+.tool-button:hover {
+  background-color: var(--primary-color);
+  color: white;
+}
+
+/* 工具对话框样式 */
+.tool-dialog {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.tool-dialog-content {
+  background-color: var(--card-background);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  width: 90%;
+  max-width: 500px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+.result-container {
+  margin-top: 1rem;
+  padding: 1rem;
+  border-radius: var(--radius);
+  background-color: var(--background-color);
+}
+
+.success-result {
+  color: var(--success-color);
+}
+
+.error-result {
+  color: var(--error-color);
+}
+
+.result-container pre {
+  background-color: var(--foreground-color);
+  color: white;
+  padding: 0.75rem;
+  border-radius: var(--radius);
+  overflow-x: auto;
+  margin-top: 0.5rem;
+}
+
+/* 通知 */
+.toast-container {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.toast {
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius);
+  background-color: var(--card-background);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  font-size: 0.875rem;
+  max-width: 300px;
+  animation: slideIn 0.3s forwards;
+}
+
+.toast.success {
+  border-left: 4px solid var(--success-color);
+}
+
+.toast.error {
+  border-left: 4px solid var(--error-color);
+}
+
+.toast.info {
+  border-left: 4px solid var(--primary-color);
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes slideOut {
+  from {
+    transform: translateX(0);
+    opacity: 1;
+  }
+  to {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+}
+
+/* 聊天界面样式 */
+.chat-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 20px;
+  gap: 15px;
+}
+
+.chat-status {
+  display: flex;
+  align-items: center;
+  margin-bottom: 10px;
+  font-size: 14px;
+}
+
+.status-label {
+  font-weight: bold;
+  margin-right: 5px;
+}
+
+.status-value {
+  color: #666;
+}
+
+.status-value.connected {
+  color: #4caf50;
+}
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  border: 1px solid #ddd;
+  border-radius: 5px;
+  padding: 15px;
+  background-color: #f9f9f9;
+  height: 800px;
+}
+
+.system-message {
+  text-align: center;
+  color: #666;
+  font-style: italic;
+  margin: 10px 0;
+  padding: 5px;
+}
+
+.message {
+  margin-bottom: 15px;
+  padding: 10px;
+  border-radius: 8px;
+  max-width: 85%;
+}
+
+.message.user {
+  background-color: #e3f2fd;
+  margin-left: auto;
+  border-bottom-right-radius: 0;
+}
+
+.message.assistant {
+  background-color: #f1f1f1;
+  margin-right: auto;
+  border-bottom-left-radius: 0;
+}
+
+.message-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 5px;
+  font-size: 12px;
+  color: #666;
+}
+
+.message-sender {
+  font-weight: bold;
+}
+
+.message-content {
+  word-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+.message-content pre {
+  background-color: rgba(0, 0, 0, 0.05);
+  border-radius: 4px;
+  padding: 8px;
+  overflow-x: auto;
+  font-family: monospace;
+  font-size: 13px;
+}
+
+.function-call {
+  background-color: #f8f8f8;
+  border: 1px solid #ddd;
+  border-radius: 5px;
+  padding: 10px;
+  margin: 10px 0;
+  font-family: monospace;
+  font-size: 13px;
+}
+
+.function-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 5px;
+  color: #333;
+}
+
+.function-title {
+  font-weight: bold;
+  margin-right: 5px;
+}
+
+.function-name {
+  color: #0066cc;
+}
+
+.function-params {
+  background-color: rgba(0, 0, 0, 0.05);
+  padding: 8px;
+  border-radius: 4px;
+  margin-bottom: 8px;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+.function-result {
+  background-color: rgba(0, 102, 204, 0.1);
+  padding: 8px;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+.chat-input-container {
+  display: flex;
+  gap: 10px;
+}
+
+#chat-input {
+  flex-grow: 1;
+  min-height: 80px;
+  padding: 10px;
+  border: 1px solid #ddd;
+  border-radius: 5px;
+  resize: vertical;
+  font-family: inherit;
+}
+
+#chat-input:disabled {
+  background-color: #f5f5f5;
+  cursor: not-allowed;
+}
+
+#send-message-btn,
+#clear-chat-btn {
+  align-self: flex-end;
+  padding: 8px 16px;
+}
+
+#send-message-btn {
+  background-color: #4caf50;
+  color: white;
+}
+
+#send-message-btn:disabled {
+  background-color: #a5d6a7;
+  cursor: not-allowed;
+}
+
+#clear-chat-btn {
+  background-color: #f44336;
+  color: white;
+}
+
+/* 响应式设计适配 */
+@media (max-width: 768px) {
+  .chat-input-container {
+    flex-direction: column;
+  }
+
+  #send-message-btn,
+  #clear-chat-btn {
+    align-self: stretch;
+    margin-top: 5px;
+  }
+
+  .message {
+    max-width: 95%;
+  }
+}
+
+/* Function Call测试界面样式 */
+.function-test-container {
+  background-color: var(--card-background);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.function-test-container .description {
+  color: var(--muted-color);
+  margin-bottom: 1rem;
+}
+
+.function-test-status {
+  display: flex;
+  align-items: center;
+  font-size: 0.875rem;
+  margin-bottom: 0.5rem;
+}
+
+.function-test-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+#function-test-message {
+  width: 100%;
+  padding: 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  font-family: inherit;
+  resize: vertical;
+  min-height: 100px;
+}
+
+.function-test-results {
+  margin-top: 1rem;
+}
+
+.function-test-results h3 {
+  margin-bottom: 0.75rem;
+  font-size: 1rem;
+}
+
+.function-test-output {
+  background-color: var(--background-color);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 1rem;
+  min-height: 200px;
+  overflow-y: auto;
+  max-height: 400px;
+  white-space: pre-wrap;
+  font-family: monospace;
+  font-size: 0.875rem;
+}
+
+.function-test-output .response-block {
+  margin-bottom: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px dashed var(--border-color);
+}
+
+.function-test-output .response-title {
+  font-weight: bold;
+  margin-bottom: 0.5rem;
+  color: var(--primary-color);
+}
+
+.function-test-output .tool-call {
+  background-color: rgba(0, 102, 204, 0.05);
+  padding: 0.75rem;
+  border-radius: var(--radius);
+  margin: 0.5rem 0;
+}
+
+.function-test-output .tool-name {
+  font-weight: bold;
+  color: var(--primary-color);
+}
+
+.function-test-output .tool-args {
+  margin-top: 0.25rem;
+  padding: 0.5rem;
+  background-color: rgba(0, 0, 0, 0.05);
+  border-radius: 4px;
+}
+
+.function-test-output .tool-result {
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  background-color: rgba(76, 175, 80, 0.1);
+  border-radius: 4px;
+}
+
+.function-test-output .final-response {
+  margin-top: 1rem;
+  padding: 0.75rem;
+  background-color: rgba(77, 208, 225, 0.1);
+  border-radius: var(--radius);
+}
+
+#run-function-test {
+  background-color: var(--primary-color);
+  color: white;
+}
+
+#run-function-test:disabled {
+  background-color: var(--border-color);
+  cursor: not-allowed;
+}
+
+#clear-function-test {
+  background-color: var(--error-color);
+  color: white;
+}
+
+@media (max-width: 768px) {
+  .function-test-output {
+    max-height: 300px;
+  }
+}
+
+/* 快速添加和导入配置样式 */
+.quick-add-section {
+  margin-bottom: 1.5rem;
+  padding: 1rem;
+  background-color: var(--background-color);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+}
+
+.quick-add-section label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+  color: var(--foreground-color);
+}
+
+.divider {
+  margin: 1.5rem 0;
+  text-align: center;
+  color: var(--muted-color);
+  font-size: 0.875rem;
+  position: relative;
+}
+
+.divider::before,
+.divider::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  width: calc(50% - 2rem);
+  height: 1px;
+  background-color: var(--border-color);
+}
+
+.divider::before {
+  left: 0;
+}
+
+.divider::after {
+  right: 0;
+}
+
+.config-import-section {
+  margin-top: 2rem;
+  padding-top: 1rem;
+}
+
+#import-config-btn {
+  margin-left: 0.5rem;
+  padding: 0.5rem 1rem;
+  background-color: var(--success-color);
+  color: white;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+#import-config-btn:hover {
+  background-color: #059669;
+}
+
+/* 文本域样式 */
+textarea {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  font-size: 0.9rem;
+  font-family: monospace;
+  background-color: var(--background-color);
+  resize: vertical;
+}
+
+textarea:focus {
+  outline: 2px solid var(--primary-color);
+  border-color: transparent;
+}
+
+/* 配置粘贴输入样式 */
+.config-paste-section {
+  margin: 1.5rem 0;
+  padding: 1rem;
+  background-color: var(--background-color);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+}
+
+#config-json {
+  font-family: 'Monaco', 'Consolas', 'Courier New', monospace;
+  font-size: 0.875rem;
+  min-height: 200px;
+  color: #333;
+  background-color: #f8f9fa;
+  white-space: pre;
+  tab-size: 2;
+}
+
+.json-actions {
+  margin-top: 0.5rem;
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+#validate-json-btn,
+#format-json-btn,
+#clear-json-btn {
+  padding: 0.4rem 0.8rem;
+  background-color: var(--muted-color);
+  color: white;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 0.875rem;
+}
+
+#validate-json-btn:hover,
+#format-json-btn:hover,
+#clear-json-btn:hover {
+  opacity: 0.9;
+}
+
+#parse-config-btn {
+  padding: 0.5rem 1rem;
+  background-color: var(--success-color);
+  color: white;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+  flex-grow: 1;
+}
+
+#parse-config-btn:hover {
+  background-color: #059669;
+}
+
+/* 命令行输入样式 */
+.command-input-section {
+  margin: 1.5rem 0;
+  padding: 1rem;
+  background-color: var(--background-color);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+}
+
+#command-line-input {
+  font-family: 'Monaco', 'Consolas', 'Courier New', monospace;
+  font-size: 0.875rem;
+  padding: 0.5rem;
+  width: 100%;
+  margin-bottom: 0.5rem;
+}
+
+#parse-command-btn {
+  padding: 0.5rem 1rem;
+  background-color: var(--primary-color);
+  color: white;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+#parse-command-btn:hover {
+  background-color: var(--primary-hover);
+}
