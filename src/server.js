@@ -12,16 +12,41 @@ const socketIo = require('socket.io');
 const tools = require('./tools');
 const openai = require('./openai');
 const axios = require('axios');
+const fs = require('fs');
 
 // 导入新架构组件
 const registry = require('./registry');
 const mcpPoolModule = require('./mcp-pool');
 const lifecycleManager = require('./lifecycle-manager');
 const proxy = require('./proxy');
+const { logger } = require('./logger');
+
+// 预定义的MCP服务器配置
+let predefinedMcpServers = {};
+
+// 尝试加载MCP服务器配置文件
+try {
+  const configPath = path.join(__dirname, '../config/mcp-servers.json');
+  if (fs.existsSync(configPath)) {
+    const configData = fs.readFileSync(configPath, 'utf8');
+    const config = JSON.parse(configData);
+    if (config.mcpServers) {
+      predefinedMcpServers = config.mcpServers;
+      logger.info(`已加载预定义MCP服务器配置`, {
+        servers: Object.keys(predefinedMcpServers),
+      });
+    }
+  }
+} catch (error) {
+  logger.error(`加载MCP服务器配置失败`, { error: error.message });
+}
 
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server);
+
+// 服务配置
+const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(bodyParser.json());
@@ -38,6 +63,7 @@ const mcpPool = mcpPoolModule.init({
   createStdioMcp: createStdioMcpFactory,
   createSseMcp: createSseMcpFactory,
 });
+logger.info('MCP服务池已初始化');
 
 // 初始化生命周期管理器
 const lifecycleController = lifecycleManager.init(
@@ -52,10 +78,16 @@ const lifecycleController = lifecycleManager.init(
     return await mcpPool.removeMcpInstance(instanceId);
   },
 );
+logger.info('生命周期管理器已初始化', {
+  checkInterval: '60秒',
+  idleTimeout: '5分钟',
+  autoCleanup: true,
+});
 
 // 创建并集成反向代理路由
 const proxyRouter = proxy.createProxyRouter(mcpPool);
 app.use('/api/proxy', proxyRouter);
+logger.info('反向代理路由已创建并集成');
 
 // 创建新会话
 function createSession(userId) {
@@ -70,7 +102,7 @@ function createSession(userId) {
 }
 
 // 从MCP进程获取工具列表
-async function getToolsFromProcess(process) {
+async function getToolsFromProcess(childProcess) {
   return new Promise((resolve, reject) => {
     // 设置超时
     const timeout = setTimeout(() => {
@@ -120,7 +152,7 @@ async function getToolsFromProcess(process) {
                 method: 'tools/list',
                 params: {},
               };
-              process.stdin.write(JSON.stringify(toolsListRequest) + '\n');
+              childProcess.stdin.write(JSON.stringify(toolsListRequest) + '\n');
               console.log('已发送工具列表请求');
               continue;
             }
@@ -131,10 +163,10 @@ async function getToolsFromProcess(process) {
               clearTimeout(timeout);
 
               // 彻底清理所有事件监听器
-              process.stdout.removeAllListeners('data');
-              process.stderr.removeAllListeners('data');
-              process.removeAllListeners('error');
-              process.removeAllListeners('exit');
+              childProcess.stdout.removeAllListeners('data');
+              childProcess.stderr.removeAllListeners('data');
+              childProcess.removeAllListeners('error');
+              childProcess.removeAllListeners('exit');
 
               console.log(`成功获取工具列表:`, response.result.tools);
               resolve(response.result.tools);
@@ -147,10 +179,10 @@ async function getToolsFromProcess(process) {
               clearTimeout(timeout);
 
               // 彻底清理所有事件监听器
-              process.stdout.removeAllListeners('data');
-              process.stderr.removeAllListeners('data');
-              process.removeAllListeners('error');
-              process.removeAllListeners('exit');
+              childProcess.stdout.removeAllListeners('data');
+              childProcess.stderr.removeAllListeners('data');
+              childProcess.removeAllListeners('error');
+              childProcess.removeAllListeners('exit');
 
               console.log(`成功获取工具列表（直接格式）:`, response.tools);
               resolve(response.tools);
@@ -182,22 +214,22 @@ async function getToolsFromProcess(process) {
       }
     };
 
-    process.stdout.on('data', dataHandler);
-    process.stderr.on('data', errorHandler);
+    childProcess.stdout.on('data', dataHandler);
+    childProcess.stderr.on('data', errorHandler);
 
     // 添加进程错误和退出处理
-    process.on('error', err => {
+    childProcess.on('error', err => {
       clearTimeout(timeout);
-      process.stdout.removeListener('data', dataHandler);
-      process.stderr.removeListener('data', errorHandler);
+      childProcess.stdout.removeListener('data', dataHandler);
+      childProcess.stderr.removeListener('data', errorHandler);
       reject(new Error(`获取工具列表时进程错误: ${err.message}`));
     });
 
-    process.on('exit', code => {
+    childProcess.on('exit', code => {
       if (code !== 0 && !toolsReceived) {
         clearTimeout(timeout);
-        process.stdout.removeListener('data', dataHandler);
-        process.stderr.removeListener('data', errorHandler);
+        childProcess.stdout.removeListener('data', dataHandler);
+        childProcess.stderr.removeListener('data', errorHandler);
         reject(new Error(`进程非正常退出，退出码: ${code}`));
       }
     });
@@ -224,7 +256,7 @@ async function getToolsFromProcess(process) {
         };
 
         try {
-          process.stdin.write(JSON.stringify(initRequest) + '\n');
+          childProcess.stdin.write(JSON.stringify(initRequest) + '\n');
           console.log('已发送初始化请求:', JSON.stringify(initRequest));
         } catch (writeError) {
           console.error('无法发送初始化请求:', writeError);
@@ -261,6 +293,7 @@ async function callRemoteMcpTool(mcpSession, toolName, params) {
     // 设置超时
     const timeout = setTimeout(() => {
       console.error(`工具调用超时: ${toolName}`);
+      cleanup();
       reject(new Error('工具调用超时'));
     }, 30000);
 
@@ -282,6 +315,7 @@ async function callRemoteMcpTool(mcpSession, toolName, params) {
 
     let buffer = '';
     let errorOutput = '';
+    let responseReceived = false;
 
     // 监听进程的错误输出
     const errorHandler = data => {
@@ -290,8 +324,87 @@ async function callRemoteMcpTool(mcpSession, toolName, params) {
       console.error(`工具 ${toolName} 错误输出:`, errorData);
     };
 
+    // 清理函数，确保只执行一次
+    const cleanup = () => {
+      if (!responseReceived) {
+        responseReceived = true;
+        clearTimeout(timeout);
+        mcpSession.process.stdout.removeListener('data', dataHandler);
+        mcpSession.process.stderr.removeListener('data', errorHandler);
+      }
+    };
+
+    // 监听进程输出
+    // const dataHandler = data => {
+    //   if (responseReceived) return; // 如果已经收到响应，忽略后续输出
+
+    //   const chunk = data.toString();
+    //   buffer += chunk;
+    //   console.log(`收到工具 ${toolName} 输出:`, chunk);
+
+    //   try {
+    //     // 尝试逐行解析 - 可能有多行输出
+    //     const lines = buffer.split('\n').filter(line => line.trim());
+
+    //     for (let i = 0; i < lines.length; i++) {
+    //       const line = lines[i];
+    //       if (!line.startsWith('{')) continue;
+
+    //       try {
+    //         const response = JSON.parse(line);
+
+    //         // 先处理标准JSON-RPC 2.0请求
+    //         if (response.jsonrpc === '2.0' && response.id === requestId) {
+    //           cleanup(); // 清理事件监听和超时
+
+    //           if (response.error) {
+    //             console.error(`工具 ${toolName} 返回错误:`, response.error);
+    //             reject(new Error(response.error.message || '工具调用失败'));
+    //           } else if (response.result !== undefined) {
+    //             console.log(`工具 ${toolName} 调用成功:`, response.result);
+    //             resolve(response.result);
+    //           } else {
+    //             reject(new Error('无效的工具调用响应'));
+    //           }
+    //           return;
+    //         }
+
+    //         // 即使ID不匹配，只要响应格式正确，也尝试处理（兼容模式）
+    //         // 这是针对market-trending和stock-quote等工具的特殊处理
+    //         if (response.jsonrpc === '2.0' && response.result) {
+    //           console.log(
+    //             `收到带有结果的JSON-RPC响应，请求ID不匹配 (实际: ${response.id}, 预期: ${requestId})，但继续处理`,
+    //           );
+
+    //           // 特别处理特定工具类型
+    //           if (
+    //             (toolName === 'market-trending' || toolName === 'stock-quote') &&
+    //             typeof response.result === 'object'
+    //           ) {
+    //             console.log(`检测到${toolName}工具返回，使用兼容模式处理结果`);
+    //             cleanup();
+    //             resolve(response.result);
+    //             return;
+    //           }
+    //         }
+    //       } catch (lineError) {
+    //         // 这行不是有效的JSON或不匹配当前请求，继续
+    //         console.log(`解析输出行失败: ${line}, 错误: ${lineError.message}`);
+    //       }
+    //     }
+
+    //     // 使用最后一行或空字符串更新缓冲区
+    //     buffer =
+    //       lines.length > 0 && !lines[lines.length - 1].endsWith('}') ? lines[lines.length - 1] : '';
+    //   } catch (e) {
+    //     console.log(`解析输出失败，继续等待: ${e.message}`);
+    //   }
+    // };
+
     // 监听进程输出
     const dataHandler = data => {
+      if (responseReceived) return; // 如果已经收到响应，忽略后续输出
+
       const chunk = data.toString();
       buffer += chunk;
       console.log(`收到工具 ${toolName} 输出:`, chunk);
@@ -300,22 +413,23 @@ async function callRemoteMcpTool(mcpSession, toolName, params) {
         // 尝试逐行解析 - 可能有多行输出
         const lines = buffer.split('\n').filter(line => line.trim());
 
-        for (const line of lines) {
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
           if (!line.startsWith('{')) continue;
 
           try {
             const response = JSON.parse(line);
+            console.log(`成功解析JSON响应:`, response);
 
-            // 检查是否是当前请求的响应
-            if (response.id === requestId) {
-              clearTimeout(timeout);
-              mcpSession.process.stdout.removeListener('data', dataHandler);
-              mcpSession.process.stderr.removeListener('data', errorHandler);
+            // 先处理标准JSON-RPC 2.0请求，ID匹配的情况
+            if (response.jsonrpc === '2.0' && response.id === requestId) {
+              console.log(`找到匹配的响应，ID: ${requestId}`);
+              cleanup(); // 清理事件监听和超时
 
               if (response.error) {
                 console.error(`工具 ${toolName} 返回错误:`, response.error);
                 reject(new Error(response.error.message || '工具调用失败'));
-              } else if (response.result) {
+              } else if (response.result !== undefined) {
                 console.log(`工具 ${toolName} 调用成功:`, response.result);
                 resolve(response.result);
               } else {
@@ -323,14 +437,92 @@ async function callRemoteMcpTool(mcpSession, toolName, params) {
               }
               return;
             }
+
+            // 即使ID不匹配，也尝试处理兼容模式（重要！）
+            // 这是针对market-trending和stock-quote等工具的特殊处理
+            if (response.jsonrpc === '2.0' && response.result) {
+              console.log(
+                `收到带有结果的JSON-RPC响应，请求ID不匹配 (实际: ${response.id}, 预期: ${requestId})，但继续处理`,
+              );
+
+              // 特别处理特定工具类型
+              if (
+                (toolName === 'market-trending' || toolName === 'stock-quote') &&
+                typeof response.result === 'object'
+              ) {
+                console.log(`检测到${toolName}工具返回，使用兼容模式处理结果`);
+                cleanup();
+                resolve(response.result);
+                return;
+              }
+            }
           } catch (lineError) {
             // 这行不是有效的JSON或不匹配当前请求，继续
-            console.log(`解析输出行失败: ${line}`);
+            console.log(`解析输出行失败: ${line}, 错误: ${lineError.message}`);
           }
         }
 
-        // 清除已处理的数据
-        buffer = lines[lines.length - 1] || '';
+        // 尝试解析完整的JSON对象（补充处理，处理跨行情况）
+        if (!responseReceived && buffer.includes('{') && buffer.includes('}')) {
+          try {
+            // 查找可能的完整JSON对象
+            const jsonStart = buffer.indexOf('{');
+            let jsonEnd = -1;
+            let bracketCount = 0;
+
+            for (let i = jsonStart; i < buffer.length; i++) {
+              if (buffer[i] === '{') bracketCount++;
+              if (buffer[i] === '}') bracketCount--;
+
+              if (bracketCount === 0) {
+                jsonEnd = i;
+                break;
+              }
+            }
+
+            if (jsonEnd !== -1) {
+              const jsonStr = buffer.substring(jsonStart, jsonEnd + 1);
+              console.log(`尝试解析跨行JSON: ${jsonStr}`);
+
+              const response = JSON.parse(jsonStr);
+
+              // 处理标准JSON-RPC 2.0响应
+              if (response.jsonrpc === '2.0') {
+                if (response.id === requestId) {
+                  console.log(`找到匹配的跨行响应，ID: ${requestId}`);
+                  cleanup();
+
+                  if (response.error) {
+                    reject(new Error(response.error.message || '工具调用失败'));
+                  } else if (response.result !== undefined) {
+                    resolve(response.result);
+                  } else {
+                    reject(new Error('无效的工具调用响应'));
+                  }
+                  return;
+                }
+
+                // 兼容模式处理
+                if (
+                  response.result &&
+                  (toolName === 'market-trending' || toolName === 'stock-quote') &&
+                  typeof response.result === 'object'
+                ) {
+                  console.log(`检测到${toolName}工具跨行响应，使用兼容模式处理结果`);
+                  cleanup();
+                  resolve(response.result);
+                  return;
+                }
+              }
+            }
+          } catch (e) {
+            console.log(`跨行JSON解析失败: ${e.message}`);
+          }
+        }
+
+        // 使用最后一行或空字符串更新缓冲区
+        buffer =
+          lines.length > 0 && !lines[lines.length - 1].endsWith('}') ? lines[lines.length - 1] : '';
       } catch (e) {
         console.log(`解析输出失败，继续等待: ${e.message}`);
       }
@@ -338,9 +530,7 @@ async function callRemoteMcpTool(mcpSession, toolName, params) {
 
     // 设置错误处理
     mcpSession.process.on('error', error => {
-      clearTimeout(timeout);
-      mcpSession.process.stdout.removeListener('data', dataHandler);
-      mcpSession.process.stderr.removeListener('data', errorHandler);
+      cleanup();
       console.error(`工具 ${toolName} 调用过程发生错误:`, error);
       reject(new Error(`MCP进程错误: ${error.message}`));
     });
@@ -354,9 +544,7 @@ async function callRemoteMcpTool(mcpSession, toolName, params) {
       mcpSession.process.stdin.write(JSON.stringify(request) + '\n');
       console.log(`已发送请求到MCP进程`);
     } catch (writeError) {
-      clearTimeout(timeout);
-      mcpSession.process.stdout.removeListener('data', dataHandler);
-      mcpSession.process.stderr.removeListener('data', errorHandler);
+      cleanup();
       console.error(`向MCP发送请求失败:`, writeError);
       reject(new Error(`发送请求失败: ${writeError.message}`));
     }
@@ -370,6 +558,392 @@ function getLocalTools() {
 
 // 从stdio创建MCP实例的工厂函数
 async function createStdioMcpFactory(config, instanceId) {
+  try {
+    // 检查是否需要先执行安装步骤
+    if (config.setup) {
+      logger.info(`检测到安装步骤，开始执行`, {
+        command: config.setup.command,
+        args: config.setup.args,
+      });
+
+      try {
+        // 检查setup命令是否存在
+        let setupCommand = config.setup.command;
+        let setupArgs = config.setup.args;
+        let useVirtualEnv = false;
+        let venvPath = '';
+
+        // 为Git仓库创建工作目录
+        let workingDir = null;
+        if (setupCommand === 'git' && setupArgs.includes('clone')) {
+          logger.info(`检测到Git克隆操作，将创建工作目录`);
+
+          try {
+            // 为每个仓库实例创建唯一的工作目录
+            const reposBasePath = path.join(__dirname, '../repos');
+
+            // 确保基础目录存在
+            if (!fs.existsSync(reposBasePath)) {
+              fs.mkdirSync(reposBasePath, { recursive: true });
+            }
+
+            // 使用实例ID创建唯一的仓库目录
+            workingDir = path.join(reposBasePath, instanceId);
+            logger.info(`创建Git仓库工作目录: ${workingDir}`);
+
+            // 创建目录
+            fs.mkdirSync(workingDir, { recursive: true });
+
+            // 修改运行命令的工作目录
+            if (config.command) {
+              logger.info(`将设置MCP命令工作目录为: ${workingDir}`);
+              config.workingDir = workingDir;
+            }
+          } catch (dirError) {
+            logger.error(`创建仓库工作目录失败: ${dirError.message}`);
+            return {
+              success: false,
+              error: `创建仓库工作目录失败: ${dirError.message}`,
+            };
+          }
+        }
+
+        // 特殊情况: 当Python或pip命令不可用时尝试替代方案
+        if (
+          !setupCommand ||
+          setupCommand === 'pip' ||
+          setupCommand === 'pip3' ||
+          setupCommand === 'python' ||
+          setupCommand === 'python3'
+        ) {
+          try {
+            logger.info(`验证${setupCommand}命令是否可用`);
+            // 根据不同操作系统使用不同的命令检查
+            const isWindows = process.platform === 'win32';
+            const checkCommand = isWindows ? 'where' : 'which';
+
+            const whichPipProcess = spawn(checkCommand, [setupCommand]);
+            const pipPath = await new Promise((resolve, reject) => {
+              let output = '';
+              whichPipProcess.stdout.on('data', data => {
+                output += data.toString().trim();
+              });
+              whichPipProcess.on('close', code => {
+                if (code === 0 && output) {
+                  resolve(output);
+                } else {
+                  reject(new Error(`${setupCommand}命令不可用，退出码: ${code}`));
+                }
+              });
+              whichPipProcess.on('error', err => {
+                reject(err);
+              });
+            });
+
+            if (pipPath) {
+              logger.info(`找到${setupCommand}命令路径: ${pipPath}`);
+            }
+          } catch (pipCheckError) {
+            logger.warn(`${setupCommand}命令不可用，尝试使用替代方案`, {
+              error: pipCheckError.message,
+            });
+
+            // 尝试通过which命令查找可能的Python路径
+            try {
+              // 尝试常见的Homebrew Python路径
+              const homebrewPythonPaths = [
+                '/opt/homebrew/bin/python3',
+                '/opt/homebrew/opt/python/bin/python3',
+                '/opt/homebrew/opt/python@3/bin/python3',
+                '/usr/local/bin/python3',
+                '/usr/bin/python3',
+              ];
+
+              // 检测macOS上的Homebrew Python
+              if (process.platform === 'darwin') {
+                for (const pythonPath of homebrewPythonPaths) {
+                  try {
+                    await fs.promises.access(pythonPath, fs.constants.X_OK);
+                    logger.info(`找到可用的Python路径: ${pythonPath}`);
+
+                    // 如果是pip命令，转换为使用Python -m pip
+                    if (setupCommand === 'pip' || setupCommand === 'pip3') {
+                      setupCommand = pythonPath;
+                      setupArgs = ['-m', 'pip', ...setupArgs];
+                      logger.info(`已转换为使用: ${setupCommand} ${setupArgs.join(' ')}`);
+                      break;
+                    }
+                    // 如果是python命令，直接使用找到的Python
+                    else if (setupCommand === 'python' || setupCommand === 'python3') {
+                      setupCommand = pythonPath;
+                      logger.info(`已转换为使用: ${setupCommand}`);
+                      break;
+                    }
+                  } catch (err) {
+                    // 路径不存在或不可执行，继续尝试下一个
+                    logger.debug(`Python路径不可用: ${pythonPath}`);
+                  }
+                }
+              }
+
+              // 如果都找不到，使用config.command（主命令）
+              if ((setupCommand === 'pip' || setupCommand === 'pip3') && config.command) {
+                setupCommand = config.command;
+                setupArgs = ['-m', 'pip', ...setupArgs];
+                logger.info(`转为使用主命令: ${setupCommand} ${setupArgs.join(' ')}`);
+              }
+            } catch (pathCheckError) {
+              logger.error(`查找Python路径失败`, { error: pathCheckError.message });
+            }
+          }
+        }
+
+        // 在macOS上自动使用虚拟环境（解决externally-managed-environment问题）
+        if (
+          process.platform === 'darwin' &&
+          (setupArgs.includes('pip') || (setupArgs.includes('-m') && setupArgs.includes('pip')))
+        ) {
+          logger.info(`检测到macOS环境，将使用虚拟环境安装Python包`);
+
+          try {
+            // 为每个MCP实例创建唯一的虚拟环境路径
+            const venvBasePath = path.join(__dirname, '../venvs');
+
+            // 确保目录存在
+            if (!fs.existsSync(venvBasePath)) {
+              fs.mkdirSync(venvBasePath, { recursive: true });
+            }
+
+            // 使用实例ID创建唯一的虚拟环境名称
+            venvPath = path.join(venvBasePath, instanceId);
+            logger.info(`将创建虚拟环境: ${venvPath}`);
+
+            // 1. 创建虚拟环境
+            logger.info(`开始创建Python虚拟环境...`);
+            const createVenvProcess = spawn(setupCommand, ['-m', 'venv', venvPath], {
+              shell: process.platform === 'win32',
+              env: { ...process.env },
+            });
+
+            await new Promise((resolve, reject) => {
+              let venvError = '';
+
+              createVenvProcess.stderr.on('data', data => {
+                venvError += data.toString();
+                logger.error(`创建虚拟环境错误: ${data.toString().trim()}`);
+              });
+
+              createVenvProcess.on('exit', code => {
+                if (code === 0) {
+                  logger.info(`虚拟环境创建成功: ${venvPath}`);
+                  resolve();
+                } else {
+                  logger.error(`虚拟环境创建失败，退出码: ${code}`);
+                  reject(new Error(`虚拟环境创建失败: ${venvError}`));
+                }
+              });
+
+              createVenvProcess.on('error', err => {
+                logger.error(`虚拟环境创建进程错误: ${err.message}`);
+                reject(err);
+              });
+            });
+
+            // 2. 确定虚拟环境中的Python解释器路径
+            const isWindows = process.platform === 'win32';
+            const venvPythonPath = isWindows
+              ? path.join(venvPath, 'Scripts', 'python.exe')
+              : path.join(venvPath, 'bin', 'python');
+
+            logger.info(`虚拟环境Python解释器路径: ${venvPythonPath}`);
+
+            // 3. 使用虚拟环境中的pip安装包
+            const originalSetupArgs = [...setupArgs];
+
+            // 修改安装命令，使用虚拟环境中的Python
+            setupCommand = venvPythonPath;
+
+            // 如果安装命令是python -m pip install xxx，保持这种格式
+            if (originalSetupArgs.includes('-m') && originalSetupArgs.includes('pip')) {
+              // 保持原来的参数不变，因为我们已经修改了setupCommand指向虚拟环境的Python
+            } else {
+              // 否则重构为使用pip模块
+              const packageIndex = originalSetupArgs.indexOf('install') + 1;
+              setupArgs = ['-m', 'pip', 'install'];
+
+              if (packageIndex > 0 && packageIndex < originalSetupArgs.length) {
+                setupArgs.push(originalSetupArgs[packageIndex]);
+              }
+            }
+
+            useVirtualEnv = true;
+            logger.info(`将使用虚拟环境安装包: ${setupCommand} ${setupArgs.join(' ')}`);
+          } catch (venvError) {
+            logger.error(`虚拟环境设置失败: ${venvError.message}`);
+            return {
+              success: false,
+              error: `虚拟环境设置失败: ${venvError.message}`,
+            };
+          }
+        }
+
+        // 执行安装命令
+        logger.info(`开始执行安装命令: ${setupCommand} ${setupArgs.join(' ')}`);
+
+        // 对于Windows，某些命令可能需要使用不同的选项
+        const spawnOptions = {
+          shell: process.platform === 'win32', // 在Windows上使用shell
+          env: { ...process.env }, // 继承环境变量
+        };
+
+        // 如果设置了工作目录，添加到选项中
+        if (workingDir) {
+          spawnOptions.cwd = workingDir;
+          logger.info(`在工作目录 ${workingDir} 中执行安装命令`);
+        }
+
+        const setupProcess = spawn(setupCommand, setupArgs, spawnOptions);
+
+        return new Promise((resolve, reject) => {
+          let setupOutput = '';
+          let setupError = '';
+
+          setupProcess.stdout.on('data', data => {
+            setupOutput += data.toString();
+            logger.info(`安装输出: ${data.toString().trim()}`);
+          });
+
+          setupProcess.stderr.on('data', data => {
+            setupError += data.toString();
+            logger.error(`安装错误: ${data.toString().trim()}`);
+          });
+
+          setupProcess.on('error', error => {
+            logger.error(`安装进程错误: ${error.message}`, {
+              command: setupCommand,
+              args: setupArgs,
+              error: error.toString(),
+              code: error.code,
+              path: error.path,
+              syscall: error.syscall,
+            });
+
+            let helpfulMessage = `安装失败: ${error.message}. 请确保 ${setupCommand} 已安装并在PATH中.`;
+
+            // 添加macOS特定提示
+            if (process.platform === 'darwin' && error.code === 'ENOENT') {
+              helpfulMessage += `\n\n在macOS上，您可能需要使用Homebrew安装Python:\n`;
+              helpfulMessage += `brew install python3\n\n`;
+              helpfulMessage += `或者在前端页面中输入完整的Python路径，例如:\n`;
+              helpfulMessage += `/opt/homebrew/bin/python3 或 /usr/bin/python3`;
+            }
+
+            reject({
+              success: false,
+              error: helpfulMessage,
+            });
+          });
+
+          setupProcess.on('exit', code => {
+            if (code === 0) {
+              logger.info(`安装成功完成`, { command: setupCommand });
+              // 继续正常的MCP创建流程，如果使用虚拟环境，则使用虚拟环境中的Python
+              if (useVirtualEnv) {
+                // 修改主命令配置，使用虚拟环境中的解释器
+                const isWindows = process.platform === 'win32';
+                const venvPythonPath = isWindows
+                  ? path.join(venvPath, 'Scripts', 'python.exe')
+                  : path.join(venvPath, 'bin', 'python');
+
+                // 创建新的配置使用虚拟环境
+                const venvConfig = { ...config };
+                venvConfig.command = venvPythonPath;
+
+                logger.info(`使用虚拟环境中的Python执行MCP: ${venvPythonPath}`);
+                resolve(createMcpProcess(venvConfig, instanceId));
+              } else {
+                resolve(createMcpProcess(config, instanceId));
+              }
+            } else {
+              logger.error(`安装失败，退出码: ${code}`, {
+                command: setupCommand,
+                output: setupOutput,
+                error: setupError,
+              });
+
+              // 尝试给出更具体的错误信息
+              let errorMessage = `安装失败，退出码: ${code}`;
+
+              if (setupError.includes('No module named pip')) {
+                errorMessage = `${setupCommand} 没有pip模块。请先安装pip`;
+              } else if (setupError.includes('not found') || code === 127) {
+                errorMessage = `找不到命令 ${setupCommand}。请确保它已安装并在PATH中`;
+              } else if (
+                setupOutput.includes('Permission denied') ||
+                setupError.includes('Permission denied')
+              ) {
+                errorMessage = `权限不足，无法安装。尝试使用管理员权限或添加 --user 标志`;
+              } else if (setupError.includes('externally-managed-environment')) {
+                errorMessage = `Python环境为外部管理环境，无法直接安装包。请使用虚拟环境或添加 --break-system-packages 标志`;
+                // 添加macOS提示
+                if (process.platform === 'darwin') {
+                  errorMessage += `\n\n请尝试使用以下命令创建虚拟环境:\n`;
+                  errorMessage += `python3 -m venv ./venv\n`;
+                  errorMessage += `source ./venv/bin/activate\n`;
+                  errorMessage += `pip install mcp-server-fetch`;
+                }
+              }
+
+              // 添加macOS提示
+              if (process.platform === 'darwin') {
+                errorMessage += `\n\n在macOS上，您可能需要使用Homebrew安装Python:\nbrew install python3\n`;
+                errorMessage += `或尝试在前端页面选择其他Python命令，例如：/opt/homebrew/bin/python3`;
+              }
+
+              reject({
+                success: false,
+                error: errorMessage + (setupError ? `\n错误信息: ${setupError}` : ''),
+              });
+            }
+          });
+        });
+      } catch (setupError) {
+        logger.error(`安装命令执行失败`, {
+          error: setupError.message,
+          stack: setupError.stack,
+          command: config.setup.command,
+          args: config.setup.args,
+        });
+
+        let errorMessage = `安装命令执行失败: ${setupError.message}. 可能原因: 1) 命令不存在 2) 权限不足 3) 网络问题`;
+
+        // 添加macOS提示
+        if (process.platform === 'darwin') {
+          errorMessage += `\n\n在macOS上，您可能需要选择正确的Python路径:\n`;
+          errorMessage += `- 如果使用Homebrew: /opt/homebrew/bin/python3\n`;
+          errorMessage += `- 或系统Python: /usr/bin/python3`;
+        }
+
+        return {
+          success: false,
+          error: errorMessage,
+        };
+      }
+    }
+
+    // 没有安装步骤，直接创建MCP进程
+    return createMcpProcess(config, instanceId);
+  } catch (error) {
+    logger.error('MCP连接错误:', error);
+    return {
+      success: false,
+      error: `无法连接到MCP: ${error.message}`,
+    };
+  }
+}
+
+// 从配置创建MCP进程的函数
+async function createMcpProcess(config, instanceId) {
   try {
     // 根据配置是否包含command和args来决定如何处理
     let executableCmd;
@@ -399,7 +973,20 @@ async function createStdioMcpFactory(config, instanceId) {
     }
 
     // 检查命令是否在允许的列表中（这里简化处理）
-    const allowedExecutables = ['node', 'npm', 'npx', 'python', 'python3', 'docker'];
+    const allowedExecutables = [
+      'node',
+      'npm',
+      'npx',
+      'python',
+      'python3',
+      'docker',
+      'uvx',
+      'pip',
+      'pip3',
+      'git',
+      'sh',
+      'bash',
+    ];
     const baseCmd = executableCmd.split('/').pop().split('\\').pop();
 
     // 允许直接执行js文件
@@ -415,24 +1002,36 @@ async function createStdioMcpFactory(config, instanceId) {
     console.log(`启动子进程: ${executableCmd} ${args.join(' ')}`);
 
     try {
-      const process = spawn(executableCmd, args, { env });
+      // 对于Windows，某些命令可能需要使用不同的选项
+      const spawnOptions = {
+        env,
+        shell: process.platform === 'win32', // 在Windows上使用shell
+      };
 
-      process.on('error', error => {
+      // 如果配置中指定了工作目录，则使用它
+      if (config.workingDir) {
+        console.log(`使用工作目录: ${config.workingDir}`);
+        spawnOptions.cwd = config.workingDir;
+      }
+
+      const childProcess = spawn(executableCmd, args, spawnOptions);
+
+      childProcess.on('error', error => {
         console.error(`进程启动错误: ${error.message}`);
       });
 
       // 处理进程退出
-      process.on('exit', code => {
+      childProcess.on('exit', code => {
         console.log(`MCP进程退出，退出码: ${code}`);
       });
 
       // 更详细的日志
-      process.stdout.on('data', data => {
+      childProcess.stdout.on('data', data => {
         console.log(`MCP 输出: ${data.toString()}`);
       });
 
       // 日志处理
-      process.stderr.on('data', data => {
+      childProcess.stderr.on('data', data => {
         console.error(`MCP错误输出: ${data}`);
       });
 
@@ -441,7 +1040,7 @@ async function createStdioMcpFactory(config, instanceId) {
       try {
         // 尝试从MCP服务获取工具列表
         console.log('等待获取工具列表...');
-        toolsList = await getToolsFromProcess(process);
+        toolsList = await getToolsFromProcess(childProcess);
         console.log(`从MCP获取的工具列表:`, toolsList);
       } catch (error) {
         console.error(`无法从MCP获取工具列表: ${error.message}`);
@@ -454,7 +1053,7 @@ async function createStdioMcpFactory(config, instanceId) {
 
       // 创建MCP会话对象
       const mcpSession = {
-        process,
+        process: childProcess,
         clientType: 'stdio',
         command: executableCmd,
         args,
@@ -798,7 +1397,18 @@ app.post('/api/session', (req, res) => {
 
 // 更新后的MCP API端点
 app.post('/api/mcp', async (req, res) => {
-  const { sessionId, name, clientType, url, command, args, env, fullCommand } = req.body;
+  const {
+    sessionId,
+    name,
+    clientType,
+    url,
+    command,
+    args,
+    env,
+    fullCommand,
+    predefinedServer,
+    setup,
+  } = req.body;
 
   console.log('收到添加MCP请求:', {
     sessionId,
@@ -808,14 +1418,15 @@ app.post('/api/mcp', async (req, res) => {
     command: command ? '有值' : undefined,
     args: args ? '有值' : undefined,
     env: env ? '有值' : undefined,
+    setup: setup ? '有值' : undefined,
     fullCommand: fullCommand ? '有值' : undefined,
+    predefinedServer: predefinedServer || '无',
   });
 
-  if (!sessionId || !name || !clientType) {
+  if (!sessionId || !name) {
     const missingParams = [];
     if (!sessionId) missingParams.push('sessionId');
     if (!name) missingParams.push('name');
-    if (!clientType) missingParams.push('clientType');
 
     console.error(`缺少必要参数: ${missingParams.join(', ')}`);
     return res.status(400).json({
@@ -834,12 +1445,29 @@ app.post('/api/mcp', async (req, res) => {
 
   let config;
   try {
-    if (clientType === 'stdio') {
+    // 检查是否使用预定义服务器
+    if (predefinedServer && predefinedMcpServers[predefinedServer]) {
+      const serverConfig = predefinedMcpServers[predefinedServer];
+      console.log(`使用预定义的MCP服务器: ${predefinedServer}`);
+
+      // 设置客户端类型为stdio（预定义服务器目前仅支持stdio）
+      clientType = 'stdio';
+
+      // 使用预定义服务器的配置
+      config = {
+        command: serverConfig.command,
+        args: serverConfig.args || [],
+        env: serverConfig.env || {},
+        setup: serverConfig.setup || undefined,
+      };
+
+      console.log(`预定义服务器配置:`, config);
+    } else if (clientType === 'stdio') {
       // 检查是新的配置格式还是旧的命令字符串格式
       if (command && args) {
         // 新的配置格式
         console.log(`准备连接stdio MCP: ${name}, 命令: ${command}, 参数: ${args.join(' ')}`);
-        config = { command, args, env };
+        config = { command, args, env, setup }; // 添加setup字段
       } else if (fullCommand) {
         // 向后兼容：旧的完整命令字符串格式
         console.log(`准备连接stdio MCP: ${name}, 命令: ${fullCommand}`);
@@ -926,14 +1554,15 @@ app.post('/api/mcp', async (req, res) => {
 
 // 创建一个适配器函数，用于处理OpenAI函数调用和远程MCP工具调用之间的参数差异
 async function mcpToolAdapter(sessionId, mcpName, toolName, params) {
-  console.log(
-    `准备调用MCP工具: sessionId=${sessionId}, mcpName=${mcpName}, toolName=${toolName}, 参数:`,
-    JSON.stringify(params, null, 2),
-  );
+  const startTime = Date.now();
+  const { mcpTool } = require('./logger');
+
+  mcpTool.callStarted(sessionId, mcpName, toolName, params);
 
   if (!sessions[sessionId] || !sessions[sessionId].mcpSessions[mcpName]) {
-    console.error(`找不到MCP会话: ${mcpName}`);
-    throw new Error(`找不到MCP会话: ${mcpName}`);
+    const error = new Error(`找不到MCP会话: ${mcpName}`);
+    mcpTool.callFailed(sessionId, mcpName, toolName, error);
+    throw error;
   }
 
   // 获取MCP会话信息
@@ -943,8 +1572,9 @@ async function mcpToolAdapter(sessionId, mcpName, toolName, params) {
   // 获取实例详情
   const instanceDetail = registry.getInstanceDetail(instanceId);
   if (!instanceDetail) {
-    console.error(`找不到MCP实例: ${instanceId}`);
-    throw new Error(`找不到MCP实例: ${instanceId}`);
+    const error = new Error(`找不到MCP实例: ${instanceId}`);
+    mcpTool.callFailed(sessionId, mcpName, toolName, error);
+    throw error;
   }
 
   const mcpSession = instanceDetail.mcpSession;
@@ -953,25 +1583,16 @@ async function mcpToolAdapter(sessionId, mcpName, toolName, params) {
   const toolDef = mcpSession.tools.find(t => t.name === toolName);
 
   if (!toolDef) {
-    console.error(`找不到工具定义: ${toolName}`);
-    throw new Error(`在MCP ${mcpName} 中找不到工具 ${toolName}`);
+    const error = new Error(`在MCP ${mcpName} 中找不到工具 ${toolName}`);
+    mcpTool.callFailed(sessionId, mcpName, toolName, error);
+    throw error;
   }
 
   // 确保参数是对象
   const safeParams = params && typeof params === 'object' ? params : {};
 
-  // 记录工具定义信息，帮助调试
-  console.log(`工具 ${toolName} 的定义:`, {
-    名称: toolDef.name,
-    描述: toolDef.description,
-    参数规范: toolDef.parameters,
-  });
-
   // 处理必需参数检查，确保工具执行正确
   if (toolDef.parameters && toolDef.parameters.required && toolDef.parameters.required.length > 0) {
-    // 记录需要的必需参数
-    console.log(`工具 ${toolName} 需要的必需参数:`, toolDef.parameters.required);
-
     // 检查必需参数是否提供
     const missingParams = toolDef.parameters.required.filter(
       param =>
@@ -979,17 +1600,15 @@ async function mcpToolAdapter(sessionId, mcpName, toolName, params) {
     );
 
     if (missingParams.length > 0) {
-      console.warn(`调用工具 ${toolName} 缺少必需参数: ${missingParams.join(', ')}`);
-      // 添加更多详细的警告信息，但仍然允许工具自行处理
-      console.warn(`缺少的参数可能导致工具无法正常工作，继续尝试调用`);
-
       // 对于图像生成等特殊工具，可以添加一些默认值
       if (toolName === 'image-gen' && missingParams.includes('prompt')) {
-        console.warn(`图像生成工具缺少必要的prompt参数，返回错误信息`);
-        return {
+        const result = {
           error: '缺少必需参数',
           message: '图像生成需要提供prompt参数，请提供描述图像内容的文本',
         };
+
+        mcpTool.callFailed(sessionId, mcpName, toolName, new Error('缺少必需参数prompt'));
+        return result;
       }
     }
   }
@@ -998,23 +1617,25 @@ async function mcpToolAdapter(sessionId, mcpName, toolName, params) {
     // 更新实例的最后使用时间
     instanceDetail.lastUsedTime = Date.now();
 
+    let result;
     if (mcpSession.isExternal) {
       if (mcpSession.clientType === 'stdio') {
         // 调用远程stdio MCP工具
-        console.log(`调用外部stdio工具: ${toolName}，参数:`, JSON.stringify(safeParams, null, 2));
-        return await callRemoteMcpTool(mcpSession, toolName, safeParams);
+        result = await callRemoteMcpTool(mcpSession, toolName, safeParams);
       } else if (mcpSession.clientType === 'sse') {
         // 调用远程SSE MCP工具
-        console.log(`调用外部SSE工具: ${toolName}，参数:`, JSON.stringify(safeParams, null, 2));
-        return await callSseMcpTool(mcpSession, toolName, safeParams);
+        result = await callSseMcpTool(mcpSession, toolName, safeParams);
       }
+    } else {
+      // 调用本地工具
+      result = await tools.executeToolCall(toolName, safeParams);
     }
 
-    // 调用本地工具
-    console.log(`调用本地工具: ${toolName}，参数:`, JSON.stringify(safeParams, null, 2));
-    return await tools.executeToolCall(toolName, safeParams);
+    const responseTime = Date.now() - startTime;
+    mcpTool.callCompleted(sessionId, mcpName, toolName, responseTime, result);
+    return result;
   } catch (error) {
-    console.error(`调用工具 ${toolName} 时发生错误:`, error);
+    mcpTool.callFailed(sessionId, mcpName, toolName, error);
     throw error; // 继续抛出错误，让上层处理
   }
 }
@@ -1122,14 +1743,17 @@ function initChatHistory(sessionId) {
 app.post('/api/chat', async (req, res) => {
   const { sessionId, message } = req.body;
 
-  console.log(`收到聊天请求:`, { sessionId, message: message ? '消息存在' : '无消息' });
+  logger.info(`收到聊天请求`, {
+    sessionId,
+    messageLength: message ? message.length : 0,
+  });
 
   if (!sessionId || !message) {
     const missingParams = [];
     if (!sessionId) missingParams.push('sessionId');
     if (!message) missingParams.push('message');
 
-    console.error(`聊天API - 缺少必要参数: ${missingParams.join(', ')}`);
+    logger.error(`聊天API - 缺少必要参数`, { missingParams });
     return res.status(400).json({
       success: false,
       error: `缺少必要参数: ${missingParams.join(', ')}`,
@@ -1138,7 +1762,7 @@ app.post('/api/chat', async (req, res) => {
 
   // 检查会话是否存在
   if (!sessions[sessionId]) {
-    console.error(`聊天API - 会话不存在: ${sessionId}`);
+    logger.error(`聊天API - 会话不存在`, { sessionId });
     return res.status(404).json({
       success: false,
       error: '会话不存在',
@@ -1168,7 +1792,7 @@ app.post('/api/chat', async (req, res) => {
       }
     }
 
-    console.log(`为会话 ${sessionId} 找到 ${allTools.length} 个工具`);
+    logger.info(`为会话准备工具完成`, { sessionId, toolCount: allTools.length });
 
     // 调用OpenAI API
     const response = await openai.callChatCompletion(
@@ -1245,7 +1869,7 @@ app.post('/api/chat', async (req, res) => {
       }
     }
   } catch (error) {
-    console.error('聊天API错误:', error);
+    logger.error('聊天API错误', { sessionId, error: error.message, stack: error.stack });
     res.status(500).json({
       success: false,
       error: `聊天失败: ${error.message}`,
@@ -1386,9 +2010,7 @@ app.post('/api/test/function-call', async (req, res) => {
       });
     }
 
-    console.log('====== 测试函数调用 ======');
-    console.log(`会话ID: ${sessionId}`);
-    console.log(`消息: ${message}`);
+    logger.info('开始测试函数调用', { sessionId, messageLength: message.length });
 
     // 准备工具列表
     const allTools = [];
@@ -1403,7 +2025,7 @@ app.post('/api/test/function-call', async (req, res) => {
       }
     }
 
-    console.log(`找到 ${allTools.length} 个工具，可供函数调用`);
+    logger.info('为测试准备工具完成', { sessionId, toolCount: allTools.length });
 
     // 仅使用工具，构建消息
     const messages = [
@@ -1438,7 +2060,10 @@ app.post('/api/test/function-call', async (req, res) => {
 
     // 处理函数调用结果并获取最终答案
     if (processedResponse.type === 'function_call') {
-      console.log('函数调用成功，准备发送结果回OpenAI获取最终回答');
+      logger.info('函数调用成功，准备获取最终回答', {
+        sessionId,
+        callCount: processedResponse.calls.length,
+      });
 
       // 添加函数调用到消息历史
       messages.push({
@@ -1457,7 +2082,7 @@ app.post('/api/test/function-call', async (req, res) => {
       }
 
       // 再次调用OpenAI，将工具结果传回给模型
-      console.log('向OpenAI发送工具调用结果...');
+      logger.info('向OpenAI发送工具调用结果', { sessionId });
       const followUpResponse = await openai.callChatCompletion(messages);
 
       // 确保返回的是文本内容
@@ -1477,11 +2102,13 @@ app.post('/api/test/function-call', async (req, res) => {
         // 返回完整结果
         return res.json({
           success: true,
-          type: 'function_result',
-          function_calls: processedResponse.calls,
-          results: processedResponse.results,
-          final_response: finalContent,
-          messages: messages,
+          response: {
+            type: 'function_result',
+            function_calls: processedResponse.calls,
+            results: processedResponse.results,
+            final_response: finalContent,
+            messages: messages,
+          },
         });
       } else {
         throw new Error('无法获取模型的最终回复');
@@ -1491,13 +2118,14 @@ app.post('/api/test/function-call', async (req, res) => {
     // 返回处理结果(非函数调用情况)
     res.json({
       success: true,
-      type: 'text',
-      content: processedResponse.content,
-      response: processedResponse,
-      messages: messages,
+      response: {
+        type: 'text',
+        content: processedResponse.content,
+        messages: messages,
+      },
     });
   } catch (error) {
-    console.error('测试函数调用失败:', error);
+    logger.error('测试函数调用失败', { sessionId, error: error.message, stack: error.stack });
     res.status(500).json({
       success: false,
       error: `测试失败: ${error.message}`,
@@ -1555,9 +2183,122 @@ app.get('/api/mcp/instances', (req, res) => {
   }
 });
 
+// 添加获取预定义MCP服务器列表的API
+app.get('/api/mcp/predefined', (req, res) => {
+  try {
+    res.json({
+      success: true,
+      servers: Object.keys(predefinedMcpServers).map(key => ({
+        id: key,
+        name: key,
+        description: predefinedMcpServers[key].description || `预定义MCP服务器: ${key}`,
+      })),
+    });
+  } catch (error) {
+    console.error('获取预定义MCP服务器列表错误:', error);
+    res.status(500).json({
+      success: false,
+      error: `获取预定义MCP服务器列表失败: ${error.message}`,
+    });
+  }
+});
+
+// 添加更新预定义MCP服务器配置的API
+app.post('/api/mcp/predefined/update', (req, res) => {
+  try {
+    const { config } = req.body;
+
+    if (!config || !config.mcpServers) {
+      return res.status(400).json({
+        success: false,
+        error: '无效的配置格式，必须包含mcpServers对象',
+      });
+    }
+
+    // 更新预定义服务器配置
+    predefinedMcpServers = config.mcpServers;
+
+    // 保存到配置文件
+    try {
+      const configDir = path.join(__dirname, '../config');
+      if (!fs.existsSync(configDir)) {
+        fs.mkdirSync(configDir, { recursive: true });
+      }
+
+      fs.writeFileSync(
+        path.join(configDir, 'mcp-servers.json'),
+        JSON.stringify({ mcpServers: predefinedMcpServers }, null, 2),
+        'utf8',
+      );
+
+      logger.info(`已更新预定义MCP服务器配置`, {
+        servers: Object.keys(predefinedMcpServers),
+      });
+    } catch (writeError) {
+      logger.error(`保存MCP服务器配置失败`, { error: writeError.message });
+    }
+
+    res.json({
+      success: true,
+      servers: Object.keys(predefinedMcpServers),
+    });
+  } catch (error) {
+    console.error('更新预定义MCP服务器配置错误:', error);
+    res.status(500).json({
+      success: false,
+      error: `更新预定义MCP服务器配置失败: ${error.message}`,
+    });
+  }
+});
+
+// 获取系统Python路径API
+app.get('/api/system/python-paths', async (req, res) => {
+  try {
+    const pythonPaths = [];
+
+    // 检查常见的Python路径
+    const commonPaths = [
+      '/opt/homebrew/bin/python3', // Homebrew on Apple Silicon
+      '/usr/local/bin/python3', // Homebrew on Intel Mac
+      '/usr/bin/python3', // System Python on Intel Mac
+    ];
+
+    // 检查每个路径是否存在
+    for (const path of commonPaths) {
+      try {
+        await fs.promises.access(path, fs.constants.X_OK);
+        pythonPaths.push(path);
+
+        // 如果路径存在，添加到结果中
+        pythonPaths.push(path);
+      } catch (err) {
+        // 路径不存在或不可执行，继续尝试下一个
+        logger.debug(`Python路径不可用: ${path}`);
+      }
+    }
+
+    res.json({
+      success: true,
+      pythonPaths,
+    });
+  } catch (error) {
+    console.error('获取系统Python路径错误:', error);
+    res.status(500).json({
+      success: false,
+      error: `获取系统Python路径失败: ${error.message}`,
+    });
+  }
+});
+
 // 启动服务器
-const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`服务器已启动，端口: ${PORT}`);
-  console.log(`访问 http://localhost:${PORT} 管理您的MCP`);
+  logger.info(`服务器已启动，监听端口: ${PORT}`);
+  logger.info(`访问 http://localhost:${PORT} 查看服务`);
+
+  // 记录环境信息
+  logger.info('服务器环境信息', {
+    nodeVersion: process.version,
+    platform: process.platform,
+    environment: process.env.NODE_ENV || 'development',
+  });
 });

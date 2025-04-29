@@ -38,6 +38,17 @@ const MCP_PRESETS = {
       MCP_API_KEY: '您的MCP API密钥',
     },
   },
+  'python-mcp': {
+    name: 'python-fetch',
+    command: 'python',
+    args: ['-m', 'mcp_server_fetch'],
+    env: {},
+    setup: {
+      command: 'pip',
+      args: ['install', 'mcp-server-fetch'],
+      description: '安装mcp-server-fetch包',
+    },
+  },
 };
 
 // 事件总线模块
@@ -73,10 +84,18 @@ const eventBus = (() => {
 // 提示消息管理模块
 const toastManager = (() => {
   function init() {
-    // 初始化提示管理器
+    // 创建Toast容器（如果不存在）
+    if (!document.getElementById('toast-container')) {
+      const toastContainer = document.createElement('div');
+      toastContainer.id = 'toast-container';
+      toastContainer.className = 'toast-container';
+      document.body.appendChild(toastContainer);
+    }
   }
 
-  function showToast(message, type = 'info') {
+  function showToast(message, type = 'info', duration = 3000) {
+    init();
+
     const toastContainer = document.getElementById('toast-container');
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
@@ -84,13 +103,15 @@ const toastManager = (() => {
 
     toastContainer.appendChild(toast);
 
-    // 3秒后自动移除
+    // 超时自动移除
     setTimeout(() => {
       toast.style.animation = 'slideOut 0.3s forwards';
-      setTimeout(() => {
+      toast.addEventListener('animationend', () => {
         toast.remove();
-      }, 300);
-    }, 3000);
+      });
+    }, duration);
+
+    return toast;
   }
 
   return {
@@ -227,6 +248,8 @@ const mcpManager = (() => {
     if (mcpInstanceMap[payload.name]) {
       payload.instanceId = mcpInstanceMap[payload.name];
     }
+
+    console.log('发送MCP添加请求:', JSON.stringify(payload, null, 2));
 
     return fetch(`${API_BASE_URL}/mcp`, {
       method: 'POST',
@@ -712,13 +735,87 @@ const chatModule = (() => {
 
       // 格式化结果
       let resultObj;
-      try {
-        resultObj = JSON.parse(result.result);
-      } catch (e) {
-        resultObj = result.result;
-      }
 
-      clone.querySelector('.function-result').textContent = JSON.stringify(resultObj, null, 2);
+      try {
+        // 尝试解析JSON字符串
+        resultObj = JSON.parse(result.result);
+
+        // 处理嵌套的特殊格式，如高德地图API的结果
+        // 检查是否有特殊的嵌套structure: {"result":{"content":[{"type":"text","text":"JSON字符串"}]}}
+        if (
+          resultObj.result &&
+          resultObj.result.content &&
+          Array.isArray(resultObj.result.content)
+        ) {
+          // 尝试从content中提取text属性中的JSON字符串
+          const textContent = resultObj.result.content.find(
+            item => item.type === 'text' && item.text,
+          );
+          if (textContent && textContent.text) {
+            try {
+              // 尝试解析text字段中的JSON
+              const parsedTextContent = JSON.parse(textContent.text);
+              // 使用解析后的内容替换结果对象
+              resultObj = parsedTextContent;
+            } catch (e) {
+              console.error('解析内嵌text字段JSON失败:', e);
+              // 保持原有结果不变
+            }
+          }
+        }
+
+        // 确保以格式化的方式显示JSON对象
+        clone.querySelector('.function-result').textContent = JSON.stringify(resultObj, null, 2);
+      } catch (e) {
+        // 如果不是有效的JSON，直接显示原始内容
+        if (typeof result.result === 'string') {
+          // 尝试检测是否是未正确解析的JSON字符串（有时候API返回的是带引号的JSON字符串）
+          if (result.result.startsWith('"') && result.result.endsWith('"')) {
+            try {
+              // 去掉外层引号并尝试解析
+              const unquoted = result.result.slice(1, -1).replace(/\\"/g, '"');
+              resultObj = JSON.parse(unquoted);
+
+              // 同样检查是否有特殊的嵌套格式
+              if (
+                resultObj.result &&
+                resultObj.result.content &&
+                Array.isArray(resultObj.result.content)
+              ) {
+                const textContent = resultObj.result.content.find(
+                  item => item.type === 'text' && item.text,
+                );
+                if (textContent && textContent.text) {
+                  try {
+                    const parsedTextContent = JSON.parse(textContent.text);
+                    resultObj = parsedTextContent;
+                  } catch (e) {
+                    console.error('解析内嵌text字段JSON失败:', e);
+                  }
+                }
+              }
+
+              clone.querySelector('.function-result').textContent = JSON.stringify(
+                resultObj,
+                null,
+                2,
+              );
+            } catch (e2) {
+              // 如果仍然失败，显示原始内容
+              clone.querySelector('.function-result').textContent = result.result;
+            }
+          } else {
+            clone.querySelector('.function-result').textContent = result.result;
+          }
+        } else {
+          // 如果已经是对象，直接格式化
+          clone.querySelector('.function-result').textContent = JSON.stringify(
+            result.result,
+            null,
+            2,
+          );
+        }
+      }
     } catch (e) {
       console.error('解析函数调用信息失败:', e);
       // 降级处理
@@ -934,10 +1031,19 @@ const functionTestModule = (() => {
 
           // 参数
           try {
-            const args = JSON.parse(call.function.arguments);
+            let argsDisplay;
+            try {
+              // 如果参数是字符串，尝试解析为JSON并格式化
+              const args = JSON.parse(call.function.arguments);
+              argsDisplay = JSON.stringify(args, null, 2);
+            } catch (e) {
+              // 如果解析失败，直接使用原始字符串
+              argsDisplay = call.function.arguments;
+            }
+
             const argsEl = document.createElement('div');
             argsEl.className = 'tool-args';
-            argsEl.textContent = JSON.stringify(args, null, 2);
+            argsEl.innerHTML = `<div class="tool-section-title">参数:</div><pre>${argsDisplay}</pre>`;
             toolCall.appendChild(argsEl);
           } catch (e) {
             console.error('解析参数失败:', e);
@@ -948,14 +1054,88 @@ const functionTestModule = (() => {
           if (result) {
             const resultEl = document.createElement('div');
             resultEl.className = 'tool-result';
+            resultEl.innerHTML = '<div class="tool-section-title">结果:</div>';
 
+            let resultDisplay;
             try {
+              // 尝试解析结果为JSON并格式化
               const resultValue = JSON.parse(result.result);
-              resultEl.textContent = JSON.stringify(resultValue, null, 2);
+
+              // 处理高德地图API等特殊嵌套结构
+              if (
+                resultValue.result &&
+                resultValue.result.content &&
+                Array.isArray(resultValue.result.content)
+              ) {
+                // 尝试从content中提取text属性中的JSON字符串
+                const textContent = resultValue.result.content.find(
+                  item => item.type === 'text' && item.text,
+                );
+                if (textContent && textContent.text) {
+                  try {
+                    // 尝试解析text字段中的JSON
+                    const parsedTextContent = JSON.parse(textContent.text);
+                    // 使用解析后的内容替换结果对象
+                    resultDisplay = JSON.stringify(parsedTextContent, null, 2);
+                  } catch (e) {
+                    console.error('解析内嵌text字段JSON失败:', e);
+                    // 使用原始解析结果
+                    resultDisplay = JSON.stringify(resultValue, null, 2);
+                  }
+                } else {
+                  resultDisplay = JSON.stringify(resultValue, null, 2);
+                }
+              } else {
+                resultDisplay = JSON.stringify(resultValue, null, 2);
+              }
             } catch (e) {
-              resultEl.textContent = result.result;
+              // 如果不是有效的JSON，尝试处理可能是JSON字符串的情况
+              if (
+                typeof result.result === 'string' &&
+                result.result.startsWith('"') &&
+                result.result.endsWith('"')
+              ) {
+                try {
+                  // 去掉外层引号并尝试解析
+                  const unquoted = result.result.slice(1, -1).replace(/\\"/g, '"');
+                  const parsed = JSON.parse(unquoted);
+
+                  // 同样检查嵌套结构
+                  if (
+                    parsed.result &&
+                    parsed.result.content &&
+                    Array.isArray(parsed.result.content)
+                  ) {
+                    const textContent = parsed.result.content.find(
+                      item => item.type === 'text' && item.text,
+                    );
+                    if (textContent && textContent.text) {
+                      try {
+                        const parsedTextContent = JSON.parse(textContent.text);
+                        resultDisplay = JSON.stringify(parsedTextContent, null, 2);
+                      } catch (e) {
+                        console.error('解析内嵌text字段JSON失败:', e);
+                        resultDisplay = JSON.stringify(parsed, null, 2);
+                      }
+                    } else {
+                      resultDisplay = JSON.stringify(parsed, null, 2);
+                    }
+                  } else {
+                    resultDisplay = JSON.stringify(parsed, null, 2);
+                  }
+                } catch (e2) {
+                  // 如果仍然失败，显示原始内容
+                  resultDisplay = result.result;
+                }
+              } else {
+                // 如果都失败了，直接使用原始结果
+                resultDisplay = result.result;
+              }
             }
 
+            const resultPre = document.createElement('pre');
+            resultPre.textContent = resultDisplay;
+            resultEl.appendChild(resultPre);
             toolCall.appendChild(resultEl);
           }
 
@@ -972,7 +1152,522 @@ const functionTestModule = (() => {
   };
 })();
 
-// 初始化应用
+// Python MCP管理器
+const pythonMcpManager = {
+  init() {
+    this.detectSystemPython();
+    this.setupEventListeners();
+    this.updatePreview();
+  },
+
+  detectSystemPython() {
+    // 尝试通过fetch API获取系统信息
+    fetch('/api/system/python-paths')
+      .then(response => response.json())
+      .then(data => {
+        if (data.success && data.pythonPaths && data.pythonPaths.length > 0) {
+          console.log('检测到系统Python路径:', data.pythonPaths);
+
+          // 找到最匹配的Python路径
+          let pythonPath = '';
+
+          // 首先尝试找Homebrew Python路径
+          const homebrewPath = data.pythonPaths.find(
+            path => path.includes('/opt/homebrew/') || path.includes('/usr/local/bin/python3'),
+          );
+
+          if (homebrewPath) {
+            pythonPath = homebrewPath;
+            console.log('使用Homebrew Python路径:', pythonPath);
+          } else {
+            // 否则使用第一个可用路径
+            pythonPath = data.pythonPaths[0];
+            console.log('使用默认Python路径:', pythonPath);
+          }
+
+          // 自动填充Python路径
+          document.getElementById('custom-python-path').value = pythonPath;
+
+          // 根据Python路径自动设置pip命令
+          // 如果是特定Python版本路径，使用python -m pip形式
+          let pipCommand = '';
+          if (pythonPath.includes('python3') || pythonPath.includes('python@')) {
+            pipCommand = `${pythonPath} -m pip`;
+          } else {
+            // 尝试使用pip3
+            pipCommand = 'pip3';
+          }
+
+          document.getElementById('custom-pip-path').value = pipCommand;
+
+          // 更新下拉选择框匹配Python路径
+          const pythonSelect = document.getElementById('python-version');
+          if (pythonPath.includes('python3.13') || pythonPath.includes('python@3.13')) {
+            // 如果是Python 3.13，选择特定选项
+            pythonSelect.value = '/opt/homebrew/opt/python@3.13/bin/python3.13';
+          } else if (pythonPath.includes('python3')) {
+            pythonSelect.value = 'python3';
+          } else {
+            pythonSelect.value = 'python';
+          }
+
+          // 更新预览
+          this.updatePreview();
+        } else {
+          console.warn('无法检测到Python路径:', data);
+          // 失败时使用默认值
+          document.getElementById('custom-python-path').value = '/opt/homebrew/bin/python3';
+          document.getElementById('custom-pip-path').value = '/opt/homebrew/bin/python3 -m pip';
+          document.getElementById('python-version').value = 'python3';
+          this.updatePreview();
+        }
+      })
+      .catch(error => {
+        console.error('获取Python路径失败:', error);
+        // 失败时使用Homebrew常见路径
+        document.getElementById('custom-python-path').value = '/opt/homebrew/bin/python3';
+        document.getElementById('custom-pip-path').value = '/opt/homebrew/bin/python3 -m pip';
+        document.getElementById('python-version').value = 'python3';
+        this.updatePreview();
+      });
+  },
+
+  setupEventListeners() {
+    const nameInput = document.getElementById('python-server-name');
+    const packageInput = document.getElementById('python-package-name');
+    const moduleInput = document.getElementById('python-module-name');
+    const extraArgsInput = document.getElementById('python-extra-args');
+    const pythonVersionSelect = document.getElementById('python-version');
+    const customPythonPath = document.getElementById('custom-python-path');
+    const pipCommandSelect = document.getElementById('pip-command');
+    const customPipPath = document.getElementById('custom-pip-path');
+    const createButton = document.getElementById('create-python-mcp-btn');
+
+    // 添加更新预览的事件监听器
+    [
+      nameInput,
+      packageInput,
+      moduleInput,
+      extraArgsInput,
+      pythonVersionSelect,
+      customPythonPath,
+      pipCommandSelect,
+      customPipPath,
+    ].forEach(el => {
+      el.addEventListener('input', () => this.updatePreview());
+      el.addEventListener('change', () => this.updatePreview());
+    });
+
+    // 当Python选择变更时，自动更新pip命令
+    pythonVersionSelect.addEventListener('change', () => {
+      const pythonCmd = pythonVersionSelect.value;
+      if (pythonCmd !== 'python' && pythonCmd !== 'python3') {
+        // 如果选择了自定义路径，自动更新pip命令使用相同路径
+        pipCommandSelect.value = 'python -m pip'; // 设置一个默认值
+        customPipPath.value = `${pythonCmd} -m pip`;
+      } else if (pythonCmd === 'python3') {
+        pipCommandSelect.value = 'python3 -m pip';
+        customPipPath.value = '';
+      } else {
+        pipCommandSelect.value = 'python -m pip';
+        customPipPath.value = '';
+      }
+      this.updatePreview();
+    });
+
+    // 添加创建按钮的点击事件
+    createButton.addEventListener('click', () => this.createPythonMcp());
+  },
+
+  updatePreview() {
+    const name = document.getElementById('python-server-name').value.trim() || 'python-mcp';
+    const packageName =
+      document.getElementById('python-package-name').value.trim() || 'mcp-server-fetch';
+    const moduleName =
+      document.getElementById('python-module-name').value.trim() || 'mcp_server_fetch';
+    const extraArgs = document.getElementById('python-extra-args').value.trim();
+
+    // 获取Python命令，优先使用自定义输入
+    let pythonCommand = document.getElementById('custom-python-path').value.trim();
+    if (!pythonCommand) {
+      pythonCommand = document.getElementById('python-version').value;
+    }
+
+    // 获取Pip命令，优先使用自定义输入
+    let pipCommand = document.getElementById('custom-pip-path').value.trim();
+    if (!pipCommand) {
+      pipCommand = document.getElementById('pip-command').value;
+    }
+
+    // 准备参数数组
+    const args = ['-m', moduleName];
+
+    // 添加额外参数
+    if (extraArgs) {
+      extraArgs.split('\n').forEach(arg => {
+        if (arg.trim()) {
+          args.push(arg.trim());
+        }
+      });
+    }
+
+    // 解析pip命令为命令和参数
+    let pipSetupCommand, pipSetupArgs;
+    if (pipCommand.includes(' ')) {
+      // 处理像 "python -m pip" 这样的命令
+      const parts = pipCommand.split(' ');
+      pipSetupCommand = parts[0];
+      pipSetupArgs = parts.slice(1).concat(['install', packageName]);
+    } else {
+      // 处理简单命令如 "pip" 或 "pip3"
+      pipSetupCommand = pipCommand;
+      pipSetupArgs = ['install', packageName];
+    }
+
+    // 创建配置对象
+    const config = {
+      mcpServers: {
+        [name]: {
+          command: pythonCommand,
+          args: args,
+          description: `Python ${packageName} MCP服务器`,
+          setup: {
+            command: pipSetupCommand,
+            args: pipSetupArgs,
+            description: `安装${packageName}包`,
+          },
+        },
+      },
+    };
+
+    // 更新预览
+    document.getElementById('python-config-preview').textContent = JSON.stringify(config, null, 2);
+  },
+
+  createPythonMcp() {
+    const name = document.getElementById('python-server-name').value.trim();
+    const packageName = document.getElementById('python-package-name').value.trim();
+    const moduleName = document.getElementById('python-module-name').value.trim();
+
+    // 获取Python命令，优先使用自定义输入
+    let pythonCommand = document.getElementById('custom-python-path').value.trim();
+    if (!pythonCommand) {
+      pythonCommand = document.getElementById('python-version').value;
+    }
+
+    // 获取Pip命令，优先使用自定义输入
+    let pipCommand = document.getElementById('custom-pip-path').value.trim();
+    if (!pipCommand) {
+      pipCommand = document.getElementById('pip-command').value;
+    }
+
+    if (!name || !packageName || !moduleName) {
+      toastManager.showToast('请填写所有必填字段', 'error');
+      return;
+    }
+
+    if (!sessionId) {
+      toastManager.showToast('请先创建会话', 'error');
+      return;
+    }
+
+    // 准备参数数组
+    const args = ['-m', moduleName];
+
+    // 添加额外参数
+    const extraArgs = document.getElementById('python-extra-args').value.trim();
+    if (extraArgs) {
+      extraArgs.split('\n').forEach(arg => {
+        if (arg.trim()) {
+          args.push(arg.trim());
+        }
+      });
+    }
+
+    // 解析pip命令为命令和参数
+    let pipSetupCommand, pipSetupArgs;
+    if (pipCommand.includes(' ')) {
+      // 处理像 "python -m pip" 这样的命令
+      const parts = pipCommand.split(' ');
+      pipSetupCommand = parts[0];
+      pipSetupArgs = parts.slice(1).concat(['install', packageName]);
+    } else {
+      // 处理简单命令如 "pip" 或 "pip3"
+      pipSetupCommand = pipCommand;
+      pipSetupArgs = ['install', packageName];
+    }
+
+    // 创建配置
+    const config = {
+      command: pythonCommand,
+      args: args,
+      description: `Python ${packageName} MCP服务器`,
+      setup: {
+        command: pipSetupCommand,
+        args: pipSetupArgs,
+        description: `安装${packageName}包`,
+      },
+    };
+
+    // 准备请求负载
+    const payload = {
+      sessionId,
+      name,
+      clientType: 'stdio',
+      command: config.command,
+      args: config.args,
+      setup: config.setup,
+    };
+
+    // 显示加载状态
+    document.getElementById('create-python-mcp-btn').disabled = true;
+    toastManager.showToast('正在创建 Python MCP 服务器，这可能需要一些时间...', 'info');
+
+    // 发送请求
+    mcpManager
+      .addMcp(payload)
+      .then(mcp => {
+        toastManager.showToast(`Python MCP 服务器 "${name}" 已成功创建`, 'success');
+        // 切换到列表标签页
+        switchTab('list-mcp');
+      })
+      .catch(error => {
+        console.error('创建 Python MCP 服务器失败:', error);
+
+        // 构建更友好的错误消息
+        let errorMsg = error.message || '未知错误';
+
+        // 添加提示信息
+        if (
+          errorMsg.includes('ENOENT') ||
+          errorMsg.includes('找不到命令') ||
+          errorMsg.includes('not found')
+        ) {
+          if (errorMsg.includes('pip') || errorMsg.includes('pip3')) {
+            errorMsg += '\n\n建议: 请尝试选择其他pip命令，如 "python -m pip" 或 "python3 -m pip"';
+          } else if (errorMsg.includes('python')) {
+            errorMsg += '\n\n建议: 请确认Python已正确安装，并设置了正确的PATH环境变量';
+          }
+        } else if (errorMsg.includes('Permission denied') || errorMsg.includes('权限不足')) {
+          errorMsg += '\n\n建议: 请尝试以管理员权限运行服务器，或使用 "--user" 选项';
+        } else if (errorMsg.includes('无法安装') || errorMsg.includes('Could not find a version')) {
+          errorMsg += '\n\n建议: 请检查包名 "' + packageName + '" 是否正确，网络是否正常';
+        }
+
+        // 显示错误消息
+        toastManager.showToast(`创建失败: ${errorMsg}`, 'error', 10000); // 显示10秒
+      })
+      .finally(() => {
+        document.getElementById('create-python-mcp-btn').disabled = false;
+      });
+  },
+};
+
+// Git MCP管理器
+const gitMcpManager = {
+  init() {
+    this.setupEventListeners();
+    this.updatePreview();
+  },
+
+  setupEventListeners() {
+    const nameInput = document.getElementById('git-mcp-name');
+    const repoUrlInput = document.getElementById('git-repo-url');
+    const repoTokenInput = document.getElementById('git-repo-token');
+    const runScriptInput = document.getElementById('git-run-script');
+    const scriptTypeSelect = document.getElementById('git-script-type');
+    const extraArgsInput = document.getElementById('git-extra-args');
+    const createButton = document.getElementById('create-git-mcp-btn');
+
+    // 添加更新预览的事件监听器
+    [
+      nameInput,
+      repoUrlInput,
+      repoTokenInput,
+      runScriptInput,
+      scriptTypeSelect,
+      extraArgsInput,
+    ].forEach(el => {
+      el.addEventListener('input', () => this.updatePreview());
+      el.addEventListener('change', () => this.updatePreview());
+    });
+
+    // 当脚本类型变更时更新预览
+    scriptTypeSelect.addEventListener('change', () => {
+      this.updatePreview();
+    });
+
+    // 添加创建按钮的点击事件
+    createButton.addEventListener('click', () => this.createGitMcp());
+  },
+
+  updatePreview() {
+    const name = document.getElementById('git-mcp-name').value.trim() || 'my-git-mcp';
+    const repoUrl =
+      document.getElementById('git-repo-url').value.trim() ||
+      'https://github.com/username/repo.git';
+    const repoToken = document.getElementById('git-repo-token').value.trim();
+    const runScript = document.getElementById('git-run-script').value.trim() || 'run.sh';
+    const scriptType = document.getElementById('git-script-type').value;
+    const extraArgs = document.getElementById('git-extra-args').value.trim();
+
+    // 确定命令类型
+    let command = 'sh';
+    if (scriptType === 'node') {
+      command = 'node';
+    } else if (scriptType === 'python') {
+      command = 'python';
+    }
+
+    // 准备参数数组
+    const args = [runScript];
+
+    // 添加额外参数
+    if (extraArgs) {
+      extraArgs.split('\n').forEach(arg => {
+        if (arg.trim()) {
+          args.push(arg.trim());
+        }
+      });
+    }
+
+    // 构建Git克隆参数
+    const gitArgs = ['clone'];
+    // 如果有Token，添加到URL中
+    if (repoToken && repoUrl.startsWith('https://')) {
+      // 使用Token格式: https://{token}@github.com/...
+      const urlWithToken = repoUrl.replace('https://', `https://${repoToken}@`);
+      gitArgs.push(urlWithToken);
+    } else {
+      gitArgs.push(repoUrl);
+    }
+    // 克隆到当前目录
+    gitArgs.push('.');
+
+    // 创建配置对象
+    const config = {
+      mcpServers: {
+        [name]: {
+          command: command,
+          args: args,
+          description: `Git仓库MCP服务`,
+          setup: {
+            command: 'git',
+            args: gitArgs,
+            description: '克隆Git仓库',
+          },
+        },
+      },
+    };
+
+    // 更新预览
+    document.getElementById('git-config-preview').textContent = JSON.stringify(config, null, 2);
+  },
+
+  createGitMcp() {
+    const name = document.getElementById('git-mcp-name').value.trim();
+    const repoUrl = document.getElementById('git-repo-url').value.trim();
+    const repoToken = document.getElementById('git-repo-token').value.trim();
+    const runScript = document.getElementById('git-run-script').value.trim();
+    const scriptType = document.getElementById('git-script-type').value;
+
+    if (!name || !repoUrl || !runScript) {
+      toastManager.showToast('请填写所有必填字段', 'error');
+      return;
+    }
+
+    // 检查sessionId是否存在
+    const currentSessionId = sessionManager.getSessionId();
+    if (!currentSessionId) {
+      toastManager.showToast('请先创建会话', 'error');
+      return;
+    }
+
+    // 确定命令类型
+    let command = 'sh';
+    if (scriptType === 'node') {
+      command = 'node';
+    } else if (scriptType === 'python') {
+      command = 'python';
+    }
+
+    // 准备参数数组
+    const args = [runScript];
+
+    // 添加额外参数
+    const extraArgs = document.getElementById('git-extra-args').value.trim();
+    if (extraArgs) {
+      extraArgs.split('\n').forEach(arg => {
+        if (arg.trim()) {
+          args.push(arg.trim());
+        }
+      });
+    }
+
+    // 构建Git克隆参数
+    const gitArgs = ['clone'];
+    // 如果有Token，添加到URL中
+    if (repoToken && repoUrl.startsWith('https://')) {
+      // 使用Token格式: https://{token}@github.com/...
+      const urlWithToken = repoUrl.replace('https://', `https://${repoToken}@`);
+      gitArgs.push(urlWithToken);
+    } else {
+      gitArgs.push(repoUrl);
+    }
+    // 克隆到当前目录
+    gitArgs.push('.');
+
+    // 创建MCP配置
+    const mcpConfig = {
+      sessionId: currentSessionId,
+      name: name,
+      clientType: 'stdio',
+      command: command,
+      args: args,
+      setup: {
+        command: 'git',
+        args: gitArgs,
+        description: '克隆Git仓库',
+      },
+    };
+
+    // 禁用按钮，防止重复提交
+    document.getElementById('create-git-mcp-btn').disabled = true;
+
+    // 显示加载提示
+    toastManager.showToast('正在创建Git MCP服务...', 'info');
+
+    // 提交请求
+    mcpManager
+      .addMcp(mcpConfig)
+      .then(result => {
+        console.log('Git MCP创建成功:', result);
+        toastManager.showToast(`Git MCP "${name}" 创建成功`, 'success');
+
+        // 切换到MCP列表标签
+        switchTab('list-mcp');
+
+        // 清空表单
+        document.getElementById('git-mcp-name').value = '';
+        document.getElementById('git-repo-url').value = '';
+        document.getElementById('git-repo-token').value = '';
+        document.getElementById('git-run-script').value = 'run.sh';
+        document.getElementById('git-script-type').value = 'shell';
+        document.getElementById('git-extra-args').value = '';
+        this.updatePreview();
+      })
+      .catch(error => {
+        console.error('Git MCP创建失败:', error);
+        toastManager.showToast('Git MCP创建失败: ' + error.message, 'error');
+      })
+      .finally(() => {
+        // 重新启用按钮
+        document.getElementById('create-git-mcp-btn').disabled = false;
+      });
+  },
+};
+
+// 应用初始化
 document.addEventListener('DOMContentLoaded', () => {
   // 初始化各个模块
   eventBus.init();
@@ -981,6 +1676,10 @@ document.addEventListener('DOMContentLoaded', () => {
   mcpManager.init();
   chatModule.init();
   functionTestModule.init();
+  pythonMcpManager.init();
+
+  // 初始化Git MCP管理器
+  gitMcpManager.init();
 
   // 初始化标签页切换
   initTabSwitching();
@@ -1013,6 +1712,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 命令行解析事件监听器
   document.getElementById('parse-command-btn').addEventListener('click', parseCommandLine);
+
+  // 连接WebSocket
+  connectWebSocket();
 });
 
 // 初始化标签页切换
@@ -1726,6 +2428,15 @@ function addMcp() {
       });
     }
 
+    // 添加setup字段，用于Python MCP预设
+    if (name === 'python-fetch' || name.startsWith('python-')) {
+      payload.setup = {
+        command: 'pip',
+        args: ['install', 'mcp-server-fetch'],
+        description: '安装mcp-server-fetch包',
+      };
+    }
+
     // 打印表单值和解析后的数据
     console.log('表单值:', {
       command: serverCommandInput.value,
@@ -1736,6 +2447,9 @@ function addMcp() {
     console.log('解析后的参数:', payload.args);
     if (payload.env) {
       console.log('解析后的环境变量:', payload.env);
+    }
+    if (payload.setup) {
+      console.log('安装步骤:', payload.setup);
     }
   } else {
     payload.url = url;

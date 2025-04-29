@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "fetch": {
+      "command": "python",
+      "args": ["-m", "mcp_server_fetch"],
+      "description": "Python Fetch MCP服务器",
+      "setup": {
+        "command": "pip",
+        "args": ["install", "mcp-server-fetch"],
+        "description": "安装mcp-server-fetch包"
+      }
+    }
+  }
+}

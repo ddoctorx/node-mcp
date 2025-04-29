@@ -1,4 +1,6 @@
 const axios = require('axios');
+const { v4: uuidv4 } = require('uuid');
+const { logger, openai: openaiLogger, functionCalling } = require('./logger');
 
 // OpenAI API配置
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -6,8 +8,8 @@ const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 
 // 检查API密钥在启动时是否存在
 if (!OPENAI_API_KEY) {
-  console.error('警告: 未设置OpenAI API密钥，请设置OPENAI_API_KEY环境变量');
-  console.error('当前环境变量:', {
+  logger.error('警告: 未设置OpenAI API密钥，请设置OPENAI_API_KEY环境变量');
+  logger.error('当前环境变量:', {
     NODE_ENV: process.env.NODE_ENV,
     PORT: process.env.PORT,
     // 不输出实际的API密钥，仅检查是否存在
@@ -15,13 +17,69 @@ if (!OPENAI_API_KEY) {
   });
 }
 
+// 格式化日志输出的工具函数
+function formatLogContent(content, type = 'default') {
+  try {
+    if (typeof content === 'string') {
+      return content;
+    }
+
+    if (type === 'request') {
+      // 格式化请求消息，隐藏过长内容
+      if (content.messages && Array.isArray(content.messages)) {
+        return {
+          ...content,
+          messages: content.messages.map(msg => ({
+            role: msg.role,
+            content:
+              typeof msg.content === 'string' && msg.content.length > 500
+                ? `${msg.content.substring(0, 500)}... [内容长度: ${msg.content.length}]`
+                : msg.content,
+          })),
+        };
+      }
+    } else if (type === 'response') {
+      // 格式化响应消息，提取关键信息
+      const formattedResponse = {
+        model: content.model,
+        usage: content.usage,
+        choices: content.choices?.map(choice => ({
+          index: choice.index,
+          finish_reason: choice.finish_reason,
+          message: choice.message
+            ? {
+                role: choice.message.role,
+                content_length: choice.message.content ? choice.message.content.length : 0,
+                content_preview: choice.message.content
+                  ? choice.message.content.length > 100
+                    ? `${choice.message.content.substring(0, 100)}...`
+                    : choice.message.content
+                  : null,
+                has_tool_calls: choice.message.tool_calls ? choice.message.tool_calls.length : 0,
+              }
+            : null,
+        })),
+      };
+      return formattedResponse;
+    }
+    return content;
+  } catch (error) {
+    logger.warn('格式化日志内容失败', { error: error.message });
+    return content;
+  }
+}
+
 // 调用OpenAI聊天API
 async function callChatCompletion(messages, tools = null, toolChoice = 'auto') {
+  // 生成请求ID
+  const requestId = uuidv4();
+  const startTime = Date.now();
+
   // 再次检查API密钥，确保它在运行时可用
   const apiKey = process.env.OPENAI_API_KEY || OPENAI_API_KEY;
 
   if (!apiKey) {
-    console.error('无法获取OpenAI API密钥，请检查.env文件和环境变量');
+    logger.error('无法获取OpenAI API密钥，请检查.env文件和环境变量');
     throw new Error('未设置OpenAI API密钥，请设置OPENAI_API_KEY环境变量');
   }
 
@@ -46,41 +104,46 @@ async function callChatCompletion(messages, tools = null, toolChoice = 'auto') {
       requestOptions.data.tool_choice = toolChoice;
     }
 
-    // 完整打印请求参数 (不包含敏感的Authorization头)
-    console.log('================ OpenAI请求开始 ================');
-    console.log('请求URL:', requestOptions.url);
-    console.log('请求方法:', requestOptions.method);
-    console.log('请求头:', {
-      'Content-Type': requestOptions.headers['Content-Type'],
-      Authorization: '******', // 隐藏实际token
+    // 记录请求开始
+    openaiLogger.requestStarted(requestId, messages, tools);
+
+    // 详细记录请求数据
+    logger.info(`OpenAI API请求数据 [${requestId}]`, {
+      event: 'openai_request_data',
+      requestId,
+      requestData: formatLogContent(requestOptions.data, 'request'),
     });
-    console.log('请求参数:');
-    console.log(JSON.stringify(requestOptions.data, null, 2));
-    console.log('================ OpenAI请求结束 ================');
 
-    console.log('正在向OpenAI API发送请求...');
     const response = await axios(requestOptions);
+    const responseTime = Date.now() - startTime;
 
-    // 完整打印响应内容
-    console.log('================ OpenAI响应开始 ================');
-    console.log('响应状态码:', response.status);
-    console.log('响应头:', response.headers);
-    console.log('响应体:');
-    console.log(JSON.stringify(response.data, null, 2));
-    console.log('================ OpenAI响应结束 ================');
+    // 记录响应完成
+    openaiLogger.requestCompleted(requestId, responseTime, response.status);
+
+    // 详细记录完整响应，但格式化后更友好
+    logger.info(`OpenAI API响应数据概览 [${requestId}]`, {
+      event: 'openai_response_overview',
+      requestId,
+      responseData: formatLogContent(response.data, 'response'),
+    });
+
+    // 保留原有的详细日志，但仅在debug级别
+    openaiLogger.responseReceived(requestId, response.data);
 
     return response.data;
   } catch (error) {
-    console.error('OpenAI API调用失败:', error.response?.status || error.message);
-    console.error('完整错误信息:', error.response?.data || error.message);
+    // 记录详细的错误信息
+    logger.error(`OpenAI API调用详细错误 [${requestId}]`, {
+      event: 'openai_request_error_detail',
+      requestId,
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      errorMessage: error.message,
+      errorData: error.response?.data,
+    });
 
-    if (error.response) {
-      console.error('================ OpenAI错误响应详情 ================');
-      console.error('错误状态码:', error.response.status);
-      console.error('错误响应头:', error.response.headers);
-      console.error('错误响应体:', JSON.stringify(error.response.data, null, 2));
-      console.error('================ OpenAI错误响应结束 ================');
-    }
+    // 记录请求失败
+    openaiLogger.requestFailed(requestId, error);
 
     throw new Error(`OpenAI API调用失败: ${error.response?.data?.error?.message || error.message}`);
   }
@@ -106,20 +169,18 @@ function convertMcpToolsToOpenAIFormat(mcpTools) {
 
 // 处理OpenAI的函数调用响应
 async function handleFunctionCalling(response, sessionId, mcpSessions, callMcpTool) {
+  const requestId = uuidv4();
+
   if (!response.choices || !response.choices[0]) {
+    logger.warn('收到无效的OpenAI响应，无法处理函数调用', { sessionId, requestId });
     return { type: 'text', content: '无法处理AI响应' };
   }
 
   const message = response.choices[0].message;
 
-  // 记录收到的消息
-  console.log('================ 处理OpenAI工具调用 ================');
-  console.log('工具调用消息:');
-  console.log(JSON.stringify(message, null, 2));
-
   // 如果有工具调用
   if (message.tool_calls && message.tool_calls.length > 0) {
-    console.log('检测到函数调用:', JSON.stringify(message.tool_calls, null, 2));
+    functionCalling.detected(requestId, message.tool_calls);
 
     // 处理所有的工具调用
     const results = [];
@@ -134,26 +195,34 @@ async function handleFunctionCalling(response, sessionId, mcpSessions, callMcpTo
             // 去除可能的空白字符，确保JSON解析有效
             const trimmedArgs = toolCall.function.arguments.trim();
 
+            // 记录函数调用参数
+            logger.info(`函数调用参数 [${requestId}] [${functionName}]`, {
+              event: 'function_call_args',
+              requestId,
+              functionName,
+              rawArgs: trimmedArgs,
+            });
+
             if (trimmedArgs === '') {
-              console.log(`函数 "${functionName}" 提供了空参数字符串，使用空对象`);
+              logger.debug(`函数 "${functionName}" 提供了空参数字符串，使用空对象`, { requestId });
             } else if (trimmedArgs === '{}') {
-              console.log(`函数 "${functionName}" 提供了空对象，使用空对象`);
+              logger.debug(`函数 "${functionName}" 提供了空对象，使用空对象`, { requestId });
             } else {
               try {
                 functionArgs = JSON.parse(trimmedArgs);
-                console.log(`成功解析函数 "${functionName}" 的参数:`, functionArgs);
+                logger.debug(`成功解析函数 "${functionName}" 的参数`, { requestId, functionArgs });
               } catch (jsonError) {
-                console.error(`解析函数 "${functionName}" 参数失败:`, jsonError);
-                console.log(`尝试解析的原始参数字符串:`, trimmedArgs);
+                logger.error(`解析函数 "${functionName}" 参数失败`, {
+                  requestId,
+                  jsonError: jsonError.message,
+                  trimmedArgs,
+                });
                 functionArgs = {}; // 解析失败时使用空对象
               }
             }
           } else {
-            console.log(`函数 "${functionName}" 没有提供有效参数，使用空对象`);
+            logger.debug(`函数 "${functionName}" 没有提供有效参数，使用空对象`, { requestId });
           }
-
-          // 额外记录更多日志，帮助调试
-          console.log(`函数 "${functionName}" 最终使用的参数:`, functionArgs);
 
           // 检查必需参数是否存在
           for (const mcpName in mcpSessions) {
@@ -166,13 +235,16 @@ async function handleFunctionCalling(response, sessionId, mcpSessions, callMcpTo
               );
 
               if (missingParams.length > 0) {
-                console.warn(`函数 "${functionName}" 缺少必需参数: ${missingParams.join(', ')}`);
+                logger.warn(`函数 "${functionName}" 缺少必需参数`, { requestId, missingParams });
               }
             }
           }
         } catch (e) {
-          console.error('解析函数参数失败:', e);
-          console.log('原始参数字符串:', toolCall.function.arguments);
+          logger.error('解析函数参数失败', {
+            requestId,
+            error: e.message,
+            arguments: toolCall.function.arguments,
+          });
         }
 
         // 查找对应的MCP和工具
@@ -180,53 +252,93 @@ async function handleFunctionCalling(response, sessionId, mcpSessions, callMcpTo
         let toolResult = null;
 
         // 记录可用的MCP和工具
-        console.log('可用的MCP服务:');
-        for (const mcpName in mcpSessions) {
-          console.log(
-            `- ${mcpName} 包含工具:`,
-            mcpSessions[mcpName].tools.map(t => t.name),
-          );
-        }
+        logger.debug('当前可用的MCP服务', {
+          requestId,
+          services: Object.entries(mcpSessions).map(([name, session]) => ({
+            name,
+            toolCount: session.tools.length,
+            tools: session.tools.map(t => t.name),
+          })),
+        });
 
         for (const mcpName in mcpSessions) {
           const mcpSession = mcpSessions[mcpName];
           const hasTool = mcpSession.tools.some(t => t.name === functionName);
 
           if (hasTool) {
-            console.log(`在MCP "${mcpName}" 中找到工具 "${functionName}"`);
+            logger.debug(`在MCP "${mcpName}" 中找到工具 "${functionName}"`, { requestId });
             foundTool = true;
 
             try {
-              console.log(`准备调用MCP "${mcpName}" 的工具 "${functionName}" 参数:`, functionArgs);
-              toolResult = await callMcpTool(sessionId, mcpName, functionName, functionArgs);
-              console.log(`工具 "${functionName}" 调用成功:`, toolResult);
-              break;
+              logger.debug(`准备调用MCP "${mcpName}" 的工具 "${functionName}"`, {
+                requestId,
+                functionArgs,
+              });
+
+              const toolCallStart = Date.now();
+              const toolCallResult = await callMcpTool(
+                sessionId,
+                mcpName,
+                functionName,
+                functionArgs,
+              );
+              const toolCallTime = Date.now() - toolCallStart;
+
+              // 记录工具调用结果
+              logger.info(`工具调用结果 [${requestId}] [${functionName}] 耗时: ${toolCallTime}ms`, {
+                event: 'function_call_result',
+                requestId,
+                functionName,
+                duration: toolCallTime,
+                resultSummary:
+                  typeof toolCallResult === 'object'
+                    ? `对象 [${Object.keys(toolCallResult).length} 个属性]`
+                    : `${typeof toolCallResult} [${String(toolCallResult).length} 字节]`,
+              });
+
+              // 使用前端期望的格式
+              results.push({
+                tool_call_id: toolCall.id,
+                function_name: functionName,
+                result: JSON.stringify(toolCallResult),
+              });
+
+              logger.debug(`工具 "${functionName}" 调用成功`, {
+                requestId,
+                result: toolCallResult,
+              });
             } catch (error) {
-              console.error(`工具 "${functionName}" 调用失败:`, error);
-              toolResult = { error: error.message };
+              logger.error(`工具 "${functionName}" 调用失败`, { requestId, error: error.message });
+
+              // 使用前端期望的格式
+              results.push({
+                tool_call_id: toolCall.id,
+                function_name: functionName,
+                result: JSON.stringify({ error: error.message }),
+              });
             }
+
+            break;
           }
         }
 
+        // 如果没有找到对应的工具
         if (!foundTool) {
-          console.error(`未找到工具: "${functionName}"`);
-          toolResult = { error: `未找到工具: "${functionName}"` };
+          logger.warn(`未找到工具 "${functionName}"`, { requestId });
+
+          // 使用前端期望的格式
+          results.push({
+            tool_call_id: toolCall.id,
+            function_name: functionName,
+            result: JSON.stringify({ error: `工具 "${functionName}" 不可用` }),
+          });
         }
-
-        // 记录函数调用结果
-        const resultForAI = JSON.stringify(toolResult);
-        console.log(`工具 "${functionName}" 返回给AI的结果:`, resultForAI);
-
-        results.push({
-          tool_call_id: toolCall.id,
-          function_name: functionName,
-          result: resultForAI,
-        });
       }
     }
 
-    console.log('================ 工具调用处理结束 ================');
+    functionCalling.completed(requestId, results);
 
+    // 返回与前端期望格式一致的结果
     return {
       type: 'function_call',
       calls: message.tool_calls,
@@ -234,14 +346,8 @@ async function handleFunctionCalling(response, sessionId, mcpSessions, callMcpTo
     };
   }
 
-  // 如果只是普通文本响应
-  console.log('OpenAI返回普通文本响应:', message.content);
-  console.log('================ OpenAI响应处理结束 ================');
-
-  return {
-    type: 'text',
-    content: message.content,
-  };
+  // 如果是普通文本响应
+  return { type: 'text', content: message.content };
 }
 
 module.exports = {

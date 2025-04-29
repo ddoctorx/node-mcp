@@ -25,6 +25,8 @@
         <button class="tab-btn" data-tab="chat">聊天</button>
         <button class="tab-btn" data-tab="test-function-call">测试Function Call</button>
         <button class="tab-btn" data-tab="monitor-pool">监控池状态</button>
+        <button class="tab-btn" data-tab="python-mcp">Python MCP</button>
+        <button class="tab-btn" data-tab="git-mcp">Git MCP</button>
       </div>
 
       <div class="tab-content active" id="add-mcp">
@@ -39,6 +41,7 @@
               <option value="stripe">Stripe MCP</option>
               <option value="openai">OpenAI MCP</option>
               <option value="docker-mcp">Docker MCP</option>
+              <option value="python-mcp">Python MCP</option>
             </select>
           </div>
 
@@ -263,6 +266,146 @@
           </div>
         </div>
       </div>
+
+      <div class="tab-content" id="python-mcp">
+        <div class="form-container">
+          <h2>创建Python MCP服务器</h2>
+          <p class="description">使用此表单可以创建基于Python的MCP服务器，系统将自动安装必要的Python包。</p>
+
+          <div class="form-group">
+            <label for="python-server-name">MCP名称 *</label>
+            <input type="text" id="python-server-name" placeholder="例如: python-fetch" required value="python-fetch">
+          </div>
+
+          <div class="form-group">
+            <label for="python-package-name">Python包名称 *</label>
+            <input type="text" id="python-package-name" placeholder="例如: mcp-server-fetch" required
+              value="mcp-server-fetch">
+          </div>
+
+          <div class="form-group">
+            <label for="python-module-name">Python模块名称 *</label>
+            <input type="text" id="python-module-name" placeholder="例如: mcp_server_fetch" required
+              value="mcp_server_fetch">
+          </div>
+
+          <div class="form-group">
+            <label for="python-extra-args">额外参数 (每行一个)</label>
+            <textarea id="python-extra-args" placeholder="例如:&#10;--api-key=YOUR_KEY&#10;--debug=true"
+              rows="3"></textarea>
+          </div>
+
+          <div class="form-group">
+            <label for="python-version">Python命令</label>
+            <select id="python-version">
+              <option value="python">python</option>
+              <option value="python3">python3</option>
+              <option value="/opt/homebrew/opt/python@3.13/bin/python3.13">/opt/homebrew/opt/python@3.13/bin/python3.13
+              </option>
+            </select>
+            <input type="text" id="custom-python-path" placeholder="或输入自定义Python路径" style="margin-top: 5px;">
+          </div>
+
+          <div class="form-group">
+            <label for="pip-command">Pip命令</label>
+            <select id="pip-command">
+              <option value="pip">pip</option>
+              <option value="pip3">pip3</option>
+              <option value="python -m pip">python -m pip</option>
+              <option value="python3 -m pip">python3 -m pip</option>
+              <option value="/opt/homebrew/opt/python@3.13/bin/python3.13 -m pip">homebrew python3.13 -m pip</option>
+            </select>
+            <input type="text" id="custom-pip-path" placeholder="或输入自定义Pip路径" style="margin-top: 5px;">
+          </div>
+
+          <div class="python-config-preview">
+            <h3>配置预览</h3>
+            <pre id="python-config-preview">
+{
+  "mcpServers": {
+    "python-fetch": {
+      "command": "python",
+      "args": ["-m", "mcp_server_fetch"],
+      "description": "Python MCP服务器",
+      "setup": {
+        "command": "pip",
+        "args": ["install", "mcp-server-fetch"],
+        "description": "安装Python包"
+      }
+    }
+  }
+}</pre>
+          </div>
+
+          <div class="form-actions">
+            <button id="create-python-mcp-btn">创建Python MCP服务器</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-content" id="git-mcp">
+        <div class="form-container">
+          <h2>创建Git仓库MCP服务</h2>
+          <p class="description">使用此表单可以从Git仓库创建MCP服务，系统将自动克隆仓库并运行服务。</p>
+
+          <div class="form-group">
+            <label for="git-mcp-name">MCP名称 *</label>
+            <input type="text" id="git-mcp-name" placeholder="例如: my-git-mcp" required>
+          </div>
+
+          <div class="form-group">
+            <label for="git-repo-url">Git仓库地址 *</label>
+            <input type="text" id="git-repo-url" placeholder="例如: https://github.com/username/repo.git" required>
+          </div>
+
+          <div class="form-group">
+            <label for="git-repo-token">Git仓库Token (如果是私有仓库)</label>
+            <input type="password" id="git-repo-token" placeholder="例如: ghp_xxxxxxxxxxxxxxxx">
+          </div>
+
+          <div class="form-group">
+            <label for="git-run-script">运行脚本路径 *</label>
+            <input type="text" id="git-run-script" placeholder="例如: run.sh 或 scripts/start.js" required value="run.sh">
+          </div>
+
+          <div class="form-group">
+            <label for="git-script-type">脚本类型</label>
+            <select id="git-script-type">
+              <option value="shell">Shell脚本</option>
+              <option value="node">Node.js脚本</option>
+              <option value="python">Python脚本</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="git-extra-args">额外参数 (每行一个)</label>
+            <textarea id="git-extra-args" placeholder="例如:&#10;--api-key=YOUR_KEY&#10;--debug=true" rows="3"></textarea>
+          </div>
+
+          <div class="git-config-preview">
+            <h3>配置预览</h3>
+            <pre id="git-config-preview">
+{
+  "mcpServers": {
+    "my-git-mcp": {
+      "command": "sh",
+      "args": ["run.sh"],
+      "description": "Git仓库MCP服务",
+      "setup": {
+        "command": "git",
+        "args": ["clone", "https://github.com/username/repo.git", "."],
+        "description": "克隆Git仓库"
+      }
+    }
+  }
+}</pre>
+          </div>
+
+          <div class="form-actions">
+            <button id="create-git-mcp-btn">创建Git MCP服务</button>
+          </div>
+        </div>
+      </div>
     </main>
 
     <div id="toast-container" class="toast-container"></div>
@@ -304,12 +447,15 @@
 
   <template id="function-call-template">
     <div class="function-call">
-      <div class="function-header">
-        <span class="function-title">函数调用:</span>
-        <span class="function-name"></span>
+      <h4>函数调用: <span class="function-name"></span></h4>
+      <div class="function-section">
+        <div class="tool-section-title">参数:</div>
+        <pre class="function-params"></pre>
       </div>
-      <div class="function-params"></div>
-      <div class="function-result"></div>
+      <div class="function-result-container">
+        <div class="tool-section-title">结果:</div>
+        <pre class="function-result"></pre>
+      </div>
     </div>
   </template>
 
