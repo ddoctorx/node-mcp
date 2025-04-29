@@ -24,6 +24,7 @@
         <button class="tab-btn" data-tab="list-mcp">已连接MCP <span id="mcp-count">0</span></button>
         <button class="tab-btn" data-tab="chat">聊天</button>
         <button class="tab-btn" data-tab="test-function-call">测试Function Call</button>
+        <button class="tab-btn" data-tab="monitor-pool">监控池状态</button>
       </div>
 
       <div class="tab-content active" id="add-mcp">
@@ -37,6 +38,7 @@
               <option value="amap-maps">高德地图 MCP</option>
               <option value="stripe">Stripe MCP</option>
               <option value="openai">OpenAI MCP</option>
+              <option value="docker-mcp">Docker MCP</option>
             </select>
           </div>
 
@@ -46,8 +48,9 @@
             <div class="divider">或者直接输入命令行</div>
             <div class="form-group">
               <label for="command-line-input">输入MCP启动命令 (例如: npx -y @amap/amap-maps-mcp-server
-                --AMAP_MAPS_API_KEY=xxx)</label>
-              <input type="text" id="command-line-input" placeholder="npx -y @mcp/server --API_KEY=your-key">
+                --AMAP_MAPS_API_KEY=xxx 或 docker run --rm -p 8080:8080 your-mcp-image)</label>
+              <input type="text" id="command-line-input"
+                placeholder="npx -y @mcp/server --API_KEY=your-key 或 docker run --rm -p 8080:8080 your-mcp-image">
               <button id="parse-command-btn">解析为配置</button>
             </div>
           </div>
@@ -184,6 +187,82 @@
           </div>
         </div>
       </div>
+
+      <div class="tab-content" id="monitor-pool">
+        <div class="pool-monitor-container">
+          <h2>MCP服务池监控</h2>
+          <div class="pool-status-section">
+            <h3>池状态概览</h3>
+            <div class="status-cards">
+              <div class="status-card">
+                <div class="card-title">总实例数</div>
+                <div class="card-value" id="total-instances">-</div>
+              </div>
+              <div class="status-card">
+                <div class="card-title">活跃实例</div>
+                <div class="card-value" id="active-instances">-</div>
+              </div>
+              <div class="status-card">
+                <div class="card-title">空闲实例</div>
+                <div class="card-value" id="idle-instances">-</div>
+              </div>
+              <div class="status-card">
+                <div class="card-title">最后更新</div>
+                <div class="card-value" id="last-update-time">-</div>
+              </div>
+            </div>
+            <div class="actions">
+              <button id="refresh-pool-status">刷新状态</button>
+              <button id="cleanup-idle-instances">清理空闲实例</button>
+            </div>
+          </div>
+
+          <div class="instances-section">
+            <h3>实例列表</h3>
+            <div class="instance-list-header">
+              <div class="instance-name">名称</div>
+              <div class="instance-id">实例ID</div>
+              <div class="instance-type">类型</div>
+              <div class="instance-sessions">会话数</div>
+              <div class="instance-status">状态</div>
+              <div class="instance-created">创建时间</div>
+              <div class="instance-actions">操作</div>
+            </div>
+            <div id="instance-list" class="instance-list">
+              <!-- 实例将动态添加到这里 -->
+              <div class="empty-state">
+                <p>暂无MCP实例</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="reuse-test-section">
+            <h3>实例复用测试</h3>
+            <div class="test-description">
+              <p>此工具可以创建相同配置的MCP实例，用于测试实例复用功能。</p>
+            </div>
+            <div class="test-form">
+              <div class="form-group">
+                <label for="test-server-name">服务名称</label>
+                <input type="text" id="test-server-name" value="test-mcp" placeholder="例如: test-mcp">
+              </div>
+              <div class="form-group">
+                <label for="test-server-command">命令</label>
+                <input type="text" id="test-server-command" value="node" placeholder="例如: node">
+              </div>
+              <div class="form-group">
+                <label for="test-server-args">参数 (逗号分隔)</label>
+                <input type="text" id="test-server-args" value="examples/stdio-mcp-server.js"
+                  placeholder="例如: index.js">
+              </div>
+              <div class="test-actions">
+                <button id="create-duplicate-instance">创建重复实例</button>
+                <div id="reuse-test-result" class="test-result"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </main>
 
     <div id="toast-container" class="toast-container"></div>
@@ -234,8 +313,24 @@
     </div>
   </template>
 
+  <template id="instance-item-template">
+    <div class="instance-item">
+      <div class="instance-name"></div>
+      <div class="instance-id"></div>
+      <div class="instance-type"></div>
+      <div class="instance-sessions"></div>
+      <div class="instance-status"></div>
+      <div class="instance-created"></div>
+      <div class="instance-actions">
+        <button class="view-instance-btn">查看</button>
+        <button class="remove-instance-btn">删除</button>
+      </div>
+    </div>
+  </template>
+
   <script src="/socket.io/socket.io.js"></script>
   <script src="app.js"></script>
+  <script src="pool-monitor.js"></script>
 </body>
 
 </html>

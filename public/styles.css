@@ -898,3 +898,208 @@ textarea:focus {
 #parse-command-btn:hover {
   background-color: var(--primary-hover);
 }
+
+/* MCP服务池监控页面样式 */
+.pool-monitor-container {
+  padding: 20px;
+  background: #f9f9f9;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.pool-status-section {
+  margin-bottom: 30px;
+}
+
+.status-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 15px;
+  margin: 15px 0;
+}
+
+.status-card {
+  background: white;
+  padding: 15px;
+  border-radius: 8px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+  min-width: 150px;
+  flex: 1;
+}
+
+.card-title {
+  font-size: 14px;
+  color: #666;
+  margin-bottom: 8px;
+}
+
+.card-value {
+  font-size: 24px;
+  font-weight: bold;
+  color: #333;
+}
+
+.actions {
+  margin-top: 15px;
+  display: flex;
+  gap: 10px;
+}
+
+.instances-section {
+  background: white;
+  padding: 15px;
+  border-radius: 8px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+  margin-bottom: 30px;
+}
+
+.instance-list-header {
+  display: grid;
+  grid-template-columns: 1.5fr 2fr 1fr 1fr 1fr 1.5fr 1fr;
+  padding: 10px;
+  background: #f1f1f1;
+  border-radius: 4px;
+  font-weight: bold;
+  color: #555;
+  font-size: 14px;
+}
+
+.instance-list {
+  margin-top: 10px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.instance-item {
+  display: grid;
+  grid-template-columns: 1.5fr 2fr 1fr 1fr 1fr 1.5fr 1fr;
+  padding: 12px 10px;
+  border-bottom: 1px solid #eee;
+  font-size: 14px;
+  align-items: center;
+}
+
+.instance-item:hover {
+  background: #f5f5f5;
+}
+
+.instance-id {
+  font-family: monospace;
+  color: #666;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.instance-status {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  text-align: center;
+}
+
+.status-connected {
+  background: #e3f9e3;
+  color: #2a882a;
+}
+
+.status-failed {
+  background: #ffe3e3;
+  color: #c82020;
+}
+
+.instance-actions {
+  display: flex;
+  gap: 5px;
+  justify-content: center;
+}
+
+.instance-actions button {
+  padding: 3px 8px;
+  font-size: 12px;
+  border-radius: 4px;
+}
+
+.view-instance-btn {
+  background: #e6f0ff;
+  color: #0055cc;
+  border: 1px solid #ccdcff;
+}
+
+.remove-instance-btn {
+  background: #ffe9e9;
+  color: #cc3333;
+  border: 1px solid #ffd0d0;
+}
+
+.view-instance-btn:hover {
+  background: #d9e5ff;
+}
+
+.remove-instance-btn:hover {
+  background: #ffd9d9;
+}
+
+.reuse-test-section {
+  background: white;
+  padding: 15px;
+  border-radius: 8px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+}
+
+.test-description {
+  margin-bottom: 15px;
+  color: #666;
+}
+
+.test-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.test-actions {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.test-result {
+  margin-top: 10px;
+  padding: 10px;
+  background: #f5f5f5;
+  border-radius: 4px;
+  min-height: 50px;
+}
+
+.test-success {
+  color: #2a882a;
+  font-weight: bold;
+}
+
+.test-error {
+  color: #c82020;
+  font-weight: bold;
+}
+
+#cleanup-idle-instances {
+  background: #ff6b6b;
+  color: white;
+  border: none;
+}
+
+#cleanup-idle-instances:hover {
+  background: #ff5252;
+}
+
+#refresh-pool-status {
+  background: #4d8eff;
+  color: white;
+  border: none;
+}
+
+#refresh-pool-status:hover {
+  background: #3b7dff;
+}

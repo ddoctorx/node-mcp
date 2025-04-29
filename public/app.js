@@ -30,6 +30,14 @@ const MCP_PRESETS = {
       OPENAI_API_KEY: '您的OpenAI API密钥',
     },
   },
+  'docker-mcp': {
+    name: 'Docker MCP',
+    command: 'docker',
+    args: ['run', '--rm', '-p', '8080:8080', 'your-mcp-server-image:latest'],
+    env: {
+      MCP_API_KEY: '您的MCP API密钥',
+    },
+  },
 };
 
 // 事件总线模块
@@ -169,6 +177,9 @@ const sessionManager = (() => {
 
 // MCP管理模块
 const mcpManager = (() => {
+  // 存储MCP实例ID映射
+  const mcpInstanceMap = {};
+
   function init() {
     // 初始化MCP管理器
   }
@@ -196,6 +207,12 @@ const mcpManager = (() => {
       .then(data => {
         if (data.success) {
           mcpList = data.mcps || [];
+          // 更新实例ID映射
+          mcpList.forEach(mcp => {
+            if (mcp.instanceId) {
+              mcpInstanceMap[mcp.name] = mcp.instanceId;
+            }
+          });
           renderMcpList();
           eventBus.emit('mcps-updated', mcpList);
           return mcpList;
@@ -206,6 +223,11 @@ const mcpManager = (() => {
   }
 
   function addMcp(payload) {
+    // 添加instanceId字段
+    if (mcpInstanceMap[payload.name]) {
+      payload.instanceId = mcpInstanceMap[payload.name];
+    }
+
     return fetch(`${API_BASE_URL}/mcp`, {
       method: 'POST',
       headers: {
@@ -216,6 +238,18 @@ const mcpManager = (() => {
       .then(response => response.json())
       .then(data => {
         if (data.success && data.mcp) {
+          // 保存实例ID映射
+          if (data.instanceId) {
+            mcpInstanceMap[data.mcp.name] = data.instanceId;
+            // 添加实例ID到MCP对象
+            data.mcp.instanceId = data.instanceId;
+          }
+
+          // 显示实例复用信息
+          if (!data.isNew && data.isPooled) {
+            toastManager.showToast(`已复用已有的MCP实例: ${data.mcp.name}`, 'info');
+          }
+
           // 添加到列表并渲染
           const existingIndex = mcpList.findIndex(m => m.name === data.mcp.name);
 
@@ -297,6 +331,42 @@ const mcpManager = (() => {
       });
   }
 
+  // 获取池状态信息
+  function getPoolStats() {
+    return fetch(`${API_BASE_URL}/mcp/pool`)
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`请求失败: ${response.status} ${response.statusText}`);
+        }
+        return response.json();
+      })
+      .then(data => {
+        if (data.success) {
+          return data.stats;
+        } else {
+          throw new Error(data.error || '获取MCP池状态失败');
+        }
+      });
+  }
+
+  // 获取所有MCP实例
+  function getAllInstances() {
+    return fetch(`${API_BASE_URL}/mcp/instances`)
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`请求失败: ${response.status} ${response.statusText}`);
+        }
+        return response.json();
+      })
+      .then(data => {
+        if (data.success) {
+          return data.instances;
+        } else {
+          throw new Error(data.error || '获取MCP实例列表失败');
+        }
+      });
+  }
+
   return {
     init,
     getAllMcps,
@@ -304,6 +374,8 @@ const mcpManager = (() => {
     addMcp,
     reconnectMcp,
     deleteMcp,
+    getPoolStats,
+    getAllInstances,
   };
 })();
 

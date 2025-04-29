@@ -13,6 +13,12 @@ const tools = require('./tools');
 const openai = require('./openai');
 const axios = require('axios');
 
+// 导入新架构组件
+const registry = require('./registry');
+const mcpPoolModule = require('./mcp-pool');
+const lifecycleManager = require('./lifecycle-manager');
+const proxy = require('./proxy');
+
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server);
@@ -21,11 +27,35 @@ app.use(cors());
 app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, '../public')));
 
-// 存储所有会话和MCP连接
+// 存储所有会话
 const sessions = {};
 
 // 存储聊天历史
 const chatHistories = {};
+
+// 初始化MCP服务池
+const mcpPool = mcpPoolModule.init({
+  createStdioMcp: createStdioMcpFactory,
+  createSseMcp: createSseMcpFactory,
+});
+
+// 初始化生命周期管理器
+const lifecycleController = lifecycleManager.init(
+  {
+    // 默认配置
+    checkInterval: 60 * 1000, // 1分钟检查一次
+    idleTimeout: 5 * 60 * 1000, // 5分钟无活动则回收
+    autoCleanup: true,
+  },
+  // 终止实例的回调函数
+  async (instanceId, mcpSession) => {
+    return await mcpPool.removeMcpInstance(instanceId);
+  },
+);
+
+// 创建并集成反向代理路由
+const proxyRouter = proxy.createProxyRouter(mcpPool);
+app.use('/api/proxy', proxyRouter);
 
 // 创建新会话
 function createSession(userId) {
@@ -338,20 +368,8 @@ function getLocalTools() {
   return tools.getToolDefinitions();
 }
 
-// MCP连接处理函数
-async function connectStdioMcp(sessionId, name, config) {
-  if (!sessions[sessionId]) {
-    console.log(`会话不存在: ${sessionId}，自动创建新会话`);
-    sessionId = createSession('anonymous');
-    console.log(`已创建新会话: ${sessionId}`);
-  }
-
-  if (sessions[sessionId].mcpSessions[name]) {
-    disconnectMcp(sessionId, name);
-  }
-
-  console.log(`尝试连接MCP: ${name}, 配置:`, config, `会话ID: ${sessionId}`);
-
+// 从stdio创建MCP实例的工厂函数
+async function createStdioMcpFactory(config, instanceId) {
   try {
     // 根据配置是否包含command和args来决定如何处理
     let executableCmd;
@@ -381,7 +399,7 @@ async function connectStdioMcp(sessionId, name, config) {
     }
 
     // 检查命令是否在允许的列表中（这里简化处理）
-    const allowedExecutables = ['node', 'npm', 'npx', 'python', 'python3'];
+    const allowedExecutables = ['node', 'npm', 'npx', 'python', 'python3', 'docker'];
     const baseCmd = executableCmd.split('/').pop().split('\\').pop();
 
     // 允许直接执行js文件
@@ -406,14 +424,6 @@ async function connectStdioMcp(sessionId, name, config) {
       // 处理进程退出
       process.on('exit', code => {
         console.log(`MCP进程退出，退出码: ${code}`);
-        if (sessions[sessionId]?.mcpSessions[name]) {
-          sessions[sessionId].mcpSessions[name].status = 'failed';
-          // 通知客户端
-          io.to(sessionId).emit('mcp_status_changed', {
-            name,
-            status: 'failed',
-          });
-        }
       });
 
       // 更详细的日志
@@ -442,9 +452,8 @@ async function connectStdioMcp(sessionId, name, config) {
         };
       }
 
-      // 存储MCP会话
-      sessions[sessionId].mcpSessions[name] = {
-        name,
+      // 创建MCP会话对象
+      const mcpSession = {
         process,
         clientType: 'stdio',
         command: executableCmd,
@@ -456,18 +465,10 @@ async function connectStdioMcp(sessionId, name, config) {
         isExternal: true, // 标记为外部MCP
       };
 
-      console.log(`MCP添加成功: ${name}`);
+      console.log(`MCP实例创建成功: ${instanceId}`);
       return {
         success: true,
-        mcp: {
-          name,
-          clientType: 'stdio',
-          command: executableCmd,
-          args,
-          env: config.env,
-          tools: toolsList,
-          status: 'connected',
-        },
+        mcpSession,
       };
     } catch (spawnError) {
       console.error(`子进程创建失败: ${spawnError.message}`);
@@ -481,6 +482,83 @@ async function connectStdioMcp(sessionId, name, config) {
     return {
       success: false,
       error: `无法连接到MCP: ${error.message}`,
+    };
+  }
+}
+
+// 从SSE服务器创建MCP实例的工厂函数
+async function createSseMcpFactory(config, instanceId) {
+  try {
+    const url = typeof config === 'string' ? config : config.url;
+
+    if (!url) {
+      return {
+        success: false,
+        error: '缺少URL参数',
+      };
+    }
+
+    console.log(`尝试连接到SSE MCP服务器: ${url}`);
+
+    // 验证服务器是否可用
+    const pingResponse = await axios
+      .get(`${url}/ping`, {
+        timeout: 5000,
+      })
+      .catch(error => {
+        console.error(`SSE服务器ping失败: ${error.message}`);
+        throw new Error(`无法连接到SSE服务器: ${error.message}`);
+      });
+
+    console.log(`SSE服务器ping成功，状态: ${pingResponse.status}`);
+
+    // 获取工具列表
+    let toolsList;
+    try {
+      // 尝试从SSE服务器获取工具列表
+      toolsList = await getToolsFromSseServer(url);
+      console.log(`从SSE服务器获取的工具列表:`, toolsList);
+    } catch (error) {
+      console.error(`无法从SSE服务器获取工具列表: ${error.message}`);
+      // 如果无法从SSE服务器获取工具列表，返回错误
+      return {
+        success: false,
+        error: `SSE服务器可用，但无法获取工具列表: ${error.message}`,
+      };
+    }
+
+    // 设置心跳检测，确保连接有效
+    const heartbeatInterval = setInterval(async () => {
+      try {
+        await axios.get(`${url}/ping`, { timeout: 5000 });
+        console.log(`SSE服务器心跳检测成功: ${url}, 实例ID: ${instanceId}`);
+      } catch (error) {
+        console.error(`SSE服务器心跳检测失败: ${error.message}`);
+      }
+    }, 30000); // 每30秒检查一次
+
+    // 创建MCP会话对象
+    const mcpSession = {
+      url,
+      clientType: 'sse',
+      tools: toolsList,
+      status: 'connected',
+      createdAt: new Date(),
+      isExternal: true,
+      lastPingTime: Date.now(),
+      heartbeatInterval,
+    };
+
+    console.log(`SSE MCP实例创建成功: ${instanceId}`);
+    return {
+      success: true,
+      mcpSession,
+    };
+  } catch (error) {
+    console.error('SSE MCP连接错误:', error);
+    return {
+      success: false,
+      error: `无法连接到SSE MCP: ${error.message}`,
     };
   }
 }
@@ -754,18 +832,18 @@ app.post('/api/mcp', async (req, res) => {
     console.log(`已创建新会话: ${actualSessionId}`);
   }
 
-  let result;
+  let config;
   try {
     if (clientType === 'stdio') {
       // 检查是新的配置格式还是旧的命令字符串格式
       if (command && args) {
         // 新的配置格式
-        console.log(`开始连接stdio MCP: ${name}, 命令: ${command}, 参数: ${args.join(' ')}`);
-        result = await connectStdioMcp(actualSessionId, name, { command, args, env });
+        console.log(`准备连接stdio MCP: ${name}, 命令: ${command}, 参数: ${args.join(' ')}`);
+        config = { command, args, env };
       } else if (fullCommand) {
         // 向后兼容：旧的完整命令字符串格式
-        console.log(`开始连接stdio MCP: ${name}, 命令: ${fullCommand}`);
-        result = await connectStdioMcp(actualSessionId, name, fullCommand);
+        console.log(`准备连接stdio MCP: ${name}, 命令: ${fullCommand}`);
+        config = fullCommand;
       } else {
         console.error('stdio类型缺少必要的命令参数');
         return res.status(400).json({
@@ -781,8 +859,8 @@ app.post('/api/mcp', async (req, res) => {
           error: '缺少URL参数',
         });
       }
-      console.log(`开始连接sse MCP: ${name}, URL: ${url}`);
-      result = connectSseMcp(actualSessionId, name, url);
+      console.log(`准备连接sse MCP: ${name}, URL: ${url}`);
+      config = { url };
     } else {
       console.error(`不支持的MCP类型: ${clientType}`);
       return res.status(400).json({
@@ -791,52 +869,52 @@ app.post('/api/mcp', async (req, res) => {
       });
     }
 
-    if (result instanceof Promise) {
-      // 处理异步结果
-      try {
-        const actualResult = await result;
-        console.log(`MCP连接结果:`, actualResult);
+    // 使用MCP池获取或创建实例
+    const poolResult = await mcpPool.getOrCreateMcpInstance(
+      actualSessionId,
+      name,
+      config,
+      clientType,
+    );
 
-        if (actualResult.success) {
-          // 通知所有连接的客户端
-          io.to(actualSessionId).emit('mcp_connected', actualResult.mcp);
-
-          // 如果使用了新会话，返回新会话ID
-          if (actualSessionId !== sessionId) {
-            actualResult.newSessionId = actualSessionId;
-          }
-
-          res.json(actualResult);
-        } else {
-          console.error(`MCP连接失败:`, actualResult.error);
-          res.status(400).json(actualResult);
-        }
-      } catch (asyncError) {
-        console.error(`处理异步MCP连接结果时出错:`, asyncError);
-        res.status(500).json({
-          success: false,
-          error: `MCP连接失败: ${asyncError.message}`,
-        });
-      }
-    } else {
-      // 处理同步结果
-      console.log(`MCP连接结果:`, result);
-
-      if (result.success) {
-        // 通知所有连接的客户端
-        io.to(actualSessionId).emit('mcp_connected', result.mcp);
-
-        // 如果使用了新会话，返回新会话ID
-        if (actualSessionId !== sessionId) {
-          result.newSessionId = actualSessionId;
-        }
-
-        res.json(result);
-      } else {
-        console.error(`MCP连接失败:`, result.error);
-        res.status(400).json(result);
-      }
+    if (!poolResult.success) {
+      console.error(`MCP连接失败:`, poolResult.error);
+      return res.status(400).json({
+        success: false,
+        error: poolResult.error,
+      });
     }
+
+    // 在会话中添加MCP引用信息
+    if (!sessions[actualSessionId].mcpSessions) {
+      sessions[actualSessionId].mcpSessions = {};
+    }
+
+    // 存储实例ID和名称的映射
+    sessions[actualSessionId].mcpSessions[name] = {
+      instanceId: poolResult.instanceId,
+      name: name,
+      ...poolResult.mcp,
+    };
+
+    // 通知所有连接的客户端
+    io.to(actualSessionId).emit('mcp_connected', poolResult.mcp);
+
+    // 处理结果
+    const result = {
+      success: true,
+      mcp: poolResult.mcp,
+      instanceId: poolResult.instanceId,
+      isPooled: true,
+      isNew: poolResult.isNew,
+    };
+
+    // 如果使用了新会话，返回新会话ID
+    if (actualSessionId !== sessionId) {
+      result.newSessionId = actualSessionId;
+    }
+
+    res.json(result);
   } catch (error) {
     console.error(`处理MCP请求时出错:`, error);
     res.status(500).json({
@@ -858,8 +936,20 @@ async function mcpToolAdapter(sessionId, mcpName, toolName, params) {
     throw new Error(`找不到MCP会话: ${mcpName}`);
   }
 
+  // 获取MCP会话信息
+  const mcpInfo = sessions[sessionId].mcpSessions[mcpName];
+  const instanceId = mcpInfo.instanceId;
+
+  // 获取实例详情
+  const instanceDetail = registry.getInstanceDetail(instanceId);
+  if (!instanceDetail) {
+    console.error(`找不到MCP实例: ${instanceId}`);
+    throw new Error(`找不到MCP实例: ${instanceId}`);
+  }
+
+  const mcpSession = instanceDetail.mcpSession;
+
   // 获取工具定义，以检查参数规范
-  const mcpSession = sessions[sessionId].mcpSessions[mcpName];
   const toolDef = mcpSession.tools.find(t => t.name === toolName);
 
   if (!toolDef) {
@@ -905,6 +995,9 @@ async function mcpToolAdapter(sessionId, mcpName, toolName, params) {
   }
 
   try {
+    // 更新实例的最后使用时间
+    instanceDetail.lastUsedTime = Date.now();
+
     if (mcpSession.isExternal) {
       if (mcpSession.clientType === 'stdio') {
         // 调用远程stdio MCP工具
@@ -960,35 +1053,11 @@ app.post('/api/mcp/call', async (req, res) => {
     console.log(`工具调用 - 会话 ${sessionId} 不存在，自动创建新会话`);
     actualSessionId = createSession('anonymous');
     console.log(`已创建新会话: ${actualSessionId}`);
-
-    // 检查是否有任何MCP连接到了旧会话
-    // 遍历所有会话查找匹配的MCP名称
-    let foundMcp = false;
-    let foundSessionId = null;
-
-    Object.keys(sessions).forEach(sid => {
-      if (sessions[sid].mcpSessions && sessions[sid].mcpSessions[mcpName]) {
-        foundMcp = true;
-        foundSessionId = sid;
-      }
-    });
-
-    if (foundMcp) {
-      console.log(`在会话 ${foundSessionId} 中找到了名为 ${mcpName} 的MCP，使用此会话`);
-      actualSessionId = foundSessionId;
-    } else {
-      // 如果创建了新会话，但没有找到请求的MCP，返回错误
-      console.error(`找不到名为 ${mcpName} 的MCP会话`);
-      return res.status(400).json({
-        success: false,
-        error: '找不到指定的MCP会话，已创建新会话，请先连接MCP',
-        newSessionId: actualSessionId,
-      });
-    }
   }
 
-  if (!sessions[actualSessionId].mcpSessions[mcpName]) {
-    console.error(`在会话 ${actualSessionId} 中找不到名为 ${mcpName} 的MCP`);
+  // 检查MCP是否在此会话中
+  if (!sessions[actualSessionId].mcpSessions || !sessions[actualSessionId].mcpSessions[mcpName]) {
+    console.log(`在会话 ${actualSessionId} 中找不到MCP ${mcpName}，尝试查找其他会话`);
 
     // 尝试在其他会话中查找相同名称的MCP
     let foundMcp = false;
@@ -1008,49 +1077,16 @@ app.post('/api/mcp/call', async (req, res) => {
       return res.status(400).json({
         success: false,
         error: `找不到名为 ${mcpName} 的MCP会话`,
-        availableMcps: Object.keys(sessions[actualSessionId].mcpSessions),
       });
     }
   }
 
   try {
-    const mcpSession = sessions[actualSessionId].mcpSessions[mcpName];
-    console.log(`使用会话 ${actualSessionId} 的 ${mcpName} MCP调用工具 ${tool}`);
-
     // 确保参数是一个有效的对象
     const safeParams = params && typeof params === 'object' ? params : {};
 
-    // 获取工具定义以验证参数
-    const toolDef = mcpSession.tools.find(t => t.name === tool);
-
-    if (toolDef && toolDef.parameters && toolDef.parameters.required) {
-      const missingParams = toolDef.parameters.required.filter(
-        param =>
-          safeParams[param] === undefined || safeParams[param] === null || safeParams[param] === '',
-      );
-
-      if (missingParams.length > 0) {
-        console.warn(`工具 ${tool} 缺少必需参数: ${missingParams.join(', ')}`);
-      }
-    }
-
-    let result;
-
-    if (mcpSession.isExternal) {
-      if (mcpSession.clientType === 'stdio') {
-        // 调用外部stdio MCP工具
-        console.log(`调用外部stdio工具: ${tool}，参数:`, JSON.stringify(safeParams, null, 2));
-        result = await callRemoteMcpTool(mcpSession, tool, safeParams);
-      } else if (mcpSession.clientType === 'sse') {
-        // 调用外部SSE MCP工具
-        console.log(`调用外部SSE工具: ${tool}，参数:`, JSON.stringify(safeParams, null, 2));
-        result = await callSseMcpTool(mcpSession, tool, safeParams);
-      }
-    } else {
-      // 调用本地工具
-      console.log(`调用本地工具: ${tool}，参数:`, JSON.stringify(safeParams, null, 2));
-      result = await tools.executeToolCall(tool, safeParams);
-    }
+    // 调用工具
+    const result = await mcpToolAdapter(actualSessionId, mcpName, tool, safeParams);
 
     console.log(`工具调用成功: ${tool}，结果:`, result);
 
@@ -1272,14 +1308,38 @@ app.delete('/api/mcp', (req, res) => {
     });
   }
 
-  const result = disconnectMcp(sessionId, name);
+  try {
+    // 检查会话是否存在
+    if (
+      !sessions[sessionId] ||
+      !sessions[sessionId].mcpSessions ||
+      !sessions[sessionId].mcpSessions[name]
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: 'MCP会话不存在',
+      });
+    }
 
-  if (result.success) {
+    const mcpInfo = sessions[sessionId].mcpSessions[name];
+    const instanceId = mcpInfo.instanceId;
+
+    // 从会话中移除MCP引用
+    delete sessions[sessionId].mcpSessions[name];
+
+    // 释放实例（但不销毁，实例会在空闲一段时间后被自动回收）
+    mcpPool.releaseMcpInstance(sessionId, instanceId);
+
     // 通知所有连接的客户端
     io.to(sessionId).emit('mcp_disconnected', { name });
-    res.json(result);
-  } else {
-    res.status(400).json(result);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('断开MCP连接错误:', error);
+    return res.status(500).json({
+      success: false,
+      error: `无法断开MCP连接: ${error.message}`,
+    });
   }
 });
 
@@ -1459,6 +1519,40 @@ io.on('connection', socket => {
   socket.on('disconnect', () => {
     console.log('客户端已断开连接:', socket.id);
   });
+});
+
+// 添加MCP池状态API
+app.get('/api/mcp/pool', (req, res) => {
+  try {
+    const stats = mcpPool.getPoolStats();
+    res.json({
+      success: true,
+      stats,
+    });
+  } catch (error) {
+    console.error('获取MCP池状态错误:', error);
+    res.status(500).json({
+      success: false,
+      error: `获取MCP池状态失败: ${error.message}`,
+    });
+  }
+});
+
+// 添加MCP实例列表API
+app.get('/api/mcp/instances', (req, res) => {
+  try {
+    const instances = registry.getAllInstances();
+    res.json({
+      success: true,
+      instances,
+    });
+  } catch (error) {
+    console.error('获取MCP实例列表错误:', error);
+    res.status(500).json({
+      success: false,
+      error: `获取MCP实例列表失败: ${error.message}`,
+    });
+  }
 });
 
 // 启动服务器

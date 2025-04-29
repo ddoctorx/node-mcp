@@ -151,3 +151,18 @@ SSE 类型 MCP 通过 HTTP API 与主系统通信：
 ## 许可证
 
 MIT
+
+{
+"mcpServers": {
+"amap-maps": {
+"command": "npx",
+"args": [
+"-y",
+"@amap/amap-maps-mcp-server"
+],
+"env": {
+"AMAP_MAPS_API_KEY": "93ca077d25089952fc2f9e2ab2ad4db2"
+}
+}
+}
+}
