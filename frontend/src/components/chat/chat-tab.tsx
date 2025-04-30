@@ -138,7 +138,17 @@ export default function ChatTab() {
       setInputMessage('');
 
       // 发送消息到服务器
-      await sendMessage(sessionId, inputMessage);
+      const response = await sendMessage(sessionId, inputMessage);
+
+      // 检查是否返回了新的会话ID，如果有则切换到新会话
+      if (response.newSessionId && response.newSessionId !== sessionId) {
+        toast.info('已创建新会话');
+        useSessionStore.getState().setSessionId(response.newSessionId);
+        // 自动重新发送消息
+        setTimeout(() => {
+          sendMessage(response.newSessionId, inputMessage);
+        }, 500);
+      }
     } catch (error) {
       console.error('发送消息失败:', error);
       toast.error(`发送消息失败: ${error instanceof Error ? error.message : '未知错误'}`);

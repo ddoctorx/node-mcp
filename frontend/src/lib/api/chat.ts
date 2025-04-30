@@ -16,6 +16,17 @@ export interface FunctionCall {
   result?: unknown;
 }
 
+export interface ChatResponse {
+  success: boolean;
+  type?: string;
+  content?: string;
+  message?: Message;
+  newSessionId?: string;
+  function_calls?: FunctionCall[];
+  results?: unknown[];
+  final_response?: string;
+}
+
 export async function getChatHistory(sessionId: string): Promise<Message[]> {
   try {
     const response = await axios.get(`${API_BASE_URL}/chat`, {
@@ -43,9 +54,9 @@ export async function getChatHistory(sessionId: string): Promise<Message[]> {
   }
 }
 
-export async function sendMessage(sessionId: string, message: string): Promise<Message> {
+export async function sendMessage(sessionId: string, message: string): Promise<ChatResponse> {
   try {
-    const response = await axios.post(`${API_BASE_URL}/chat`, {
+    const response = await axios.post<ChatResponse>(`${API_BASE_URL}/chat`, {
       sessionId,
       message,
     });
@@ -54,7 +65,7 @@ export async function sendMessage(sessionId: string, message: string): Promise<M
       throw new Error(response.data.error || '发送消息失败');
     }
 
-    return response.data.message;
+    return response.data;
   } catch (error) {
     console.error('发送消息失败:', error);
     if (axios.isAxiosError(error)) {

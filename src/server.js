@@ -1672,9 +1672,26 @@ app.post('/api/mcp/call', async (req, res) => {
   // 检查会话是否存在，如果不存在则自动创建
   let actualSessionId = sessionId;
   if (!sessions[sessionId]) {
-    console.log(`工具调用 - 会话 ${sessionId} 不存在，自动创建新会话`);
-    actualSessionId = createSession('anonymous');
-    console.log(`已创建新会话: ${actualSessionId}`);
+    logger.info(`聊天API - 会话不存在，自动创建新会话`, { sessionId });
+    // 创建新会话并使用它
+    const newSessionId = createSession('anonymous');
+
+    // 初始化聊天历史
+    initChatHistory(newSessionId);
+
+    // 返回新创建的会话ID信息
+    logger.info(`已创建新会话，返回新会话ID`, { newSessionId });
+
+    return res.json({
+      success: true,
+      newSessionId,
+      message: {
+        id: Date.now().toString(),
+        role: 'system',
+        content: '已创建新会话，请使用新会话ID',
+        time: new Date().toISOString(),
+      },
+    });
   }
 
   // 检查MCP是否在此会话中
@@ -1902,7 +1919,28 @@ app.get('/api/chat/history/:sessionId', (req, res) => {
   });
 });
 
-// 清除聊天历史API端点
+// 清除聊天历史 DELETE API端点 - 查询参数形式
+app.delete('/api/chat', (req, res) => {
+  const { sessionId } = req.query;
+
+  if (!sessionId) {
+    return res.status(400).json({
+      success: false,
+      error: '缺少会话ID',
+    });
+  }
+
+  if (chatHistories[sessionId]) {
+    delete chatHistories[sessionId];
+  }
+
+  res.json({
+    success: true,
+    message: '聊天历史已清除',
+  });
+});
+
+// 清除聊天历史API端点 - 路径参数形式 (保留兼容性)
 app.delete('/api/chat/history/:sessionId', (req, res) => {
   const { sessionId } = req.params;
 
@@ -2311,4 +2349,42 @@ app.get('*', (req, res) => {
     return res.status(404).json({ error: 'API路由不存在' });
   }
   res.sendFile(path.join(__dirname, '../frontend/out/index.html'));
+});
+
+// 获取聊天历史 GET API端点 - 处理查询参数形式
+app.get('/api/chat', (req, res) => {
+  const { sessionId } = req.query;
+
+  if (!sessionId) {
+    return res.status(400).json({
+      success: false,
+      error: '缺少会话ID',
+    });
+  }
+
+  if (!chatHistories[sessionId]) {
+    return res.json({
+      success: true,
+      messages: [],
+    });
+  }
+
+  // 将聊天历史记录转换为前端需要的消息格式
+  const messages = chatHistories[sessionId].map((entry, index) => {
+    return {
+      id: `msg-${index}`,
+      role: entry.role,
+      content: entry.content || '',
+      time: entry.time || new Date().toISOString(),
+      functionCalls: entry.tool_calls?.map(tool => ({
+        name: tool.function?.name || '',
+        params: tool.function?.arguments ? JSON.parse(tool.function.arguments) : {},
+      })),
+    };
+  });
+
+  res.json({
+    success: true,
+    messages: messages,
+  });
 });
