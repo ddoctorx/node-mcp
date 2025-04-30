@@ -1,8 +1,26 @@
 // 常量和设置
 const API_BASE_URL = '/api';
 let sessionId = null;
+let userId = null; // 添加用户ID变量
 let socket = null;
 let mcpList = [];
+
+// 添加自定义样式
+(function () {
+  const style = document.createElement('style');
+  style.textContent = `
+    .editable-user-id {
+      cursor: pointer;
+      text-decoration: underline dotted;
+      color: #0066cc;
+      transition: color 0.2s;
+    }
+    .editable-user-id:hover {
+      color: #004080;
+    }
+  `;
+  document.head.appendChild(style);
+})();
 
 // MCP预设配置
 const MCP_PRESETS = {
@@ -130,6 +148,10 @@ const sessionManager = (() => {
     return sessionId;
   }
 
+  function getUserId() {
+    return userId;
+  }
+
   function createNewSession() {
     // 禁用UI元素，显示加载状态
     const allButtons = document.querySelectorAll('button');
@@ -141,7 +163,9 @@ const sessionManager = (() => {
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ userId: 'user-' + Date.now() }),
+      body: JSON.stringify({
+        userId: localStorage.getItem('mcpUserId') || null,
+      }),
     })
       .then(response => {
         if (!response.ok) {
@@ -152,9 +176,22 @@ const sessionManager = (() => {
       .then(data => {
         if (data.success) {
           sessionId = data.sessionId;
-          localStorage.setItem('mcpSessionId', sessionId);
 
-          console.log(`新会话已创建: ${sessionId}`);
+          // 检查返回的userId或使用现有值
+          if (data.userId && data.userId !== 'undefined') {
+            userId = data.userId;
+          } else {
+            // 如果服务器没有返回有效的userId，使用存储的或默认值
+            userId = localStorage.getItem('mcpUserId');
+            if (!userId || userId === 'undefined') {
+              userId = 'anonymous';
+            }
+          }
+
+          localStorage.setItem('mcpSessionId', sessionId);
+          localStorage.setItem('mcpUserId', userId);
+
+          console.log(`新会话已创建: ${sessionId}, 用户ID: ${userId}`);
 
           // 更新UI
           updateSessionDisplay();
@@ -173,7 +210,7 @@ const sessionManager = (() => {
           // 重新启用UI元素
           allButtons.forEach(btn => (btn.disabled = false));
 
-          return sessionId;
+          return { sessionId, userId };
         } else {
           throw new Error(data.error || '创建会话失败');
         }
@@ -189,10 +226,34 @@ const sessionManager = (() => {
       });
   }
 
+  // 获取用户的所有会话
+  function getUserSessions() {
+    if (!userId) {
+      return Promise.reject(new Error('没有用户ID'));
+    }
+
+    return fetch(`${API_BASE_URL}/sessions/user/${userId}`)
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`获取会话列表失败: ${response.status} ${response.statusText}`);
+        }
+        return response.json();
+      })
+      .then(data => {
+        if (data.success) {
+          return data.sessions;
+        } else {
+          throw new Error(data.error || '获取用户会话失败');
+        }
+      });
+  }
+
   return {
     init,
     getSessionId,
+    getUserId,
     createNewSession,
+    getUserSessions,
   };
 })();
 
@@ -792,7 +853,11 @@ const chatModule = (() => {
                   } catch (e) {
                     console.error('解析内嵌text字段JSON失败:', e);
                   }
+                } else {
+                  resultObj = JSON.stringify(resultValue, null, 2);
                 }
+              } else {
+                resultObj = JSON.stringify(resultValue, null, 2);
               }
 
               clone.querySelector('.function-result').textContent = JSON.stringify(
@@ -1667,79 +1732,112 @@ const gitMcpManager = {
   },
 };
 
-// 应用初始化
-document.addEventListener('DOMContentLoaded', () => {
-  // 初始化各个模块
-  eventBus.init();
-  toastManager.init();
-  sessionManager.init();
-  mcpManager.init();
-  chatModule.init();
-  functionTestModule.init();
-  pythonMcpManager.init();
-
-  // 初始化Git MCP管理器
-  gitMcpManager.init();
-
-  // 初始化标签页切换
-  initTabSwitching();
-
-  // 初始化表单事件监听
-  initFormListeners();
-
-  // 尝试从本地存储恢复会话
-  restoreSession();
-
-  // 为"添加第一个MCP"按钮添加事件监听
-  addFirstMcpBtn.addEventListener('click', () => {
-    switchTab('add-mcp');
-  });
-
-  // 创建新会话按钮
-  newSessionBtn.addEventListener('click', createNewSession);
-
-  // 预设MCP选择器事件
-  presetMcpSelect.addEventListener('change', handlePresetSelect);
-
-  // 导入配置按钮事件
-  importConfigBtn.addEventListener('click', handleConfigImport);
-
-  // 配置JSON区域事件监听器
-  document.getElementById('validate-json-btn').addEventListener('click', validateJSON);
-  document.getElementById('format-json-btn').addEventListener('click', formatJSON);
-  document.getElementById('clear-json-btn').addEventListener('click', clearJSON);
-  document.getElementById('parse-config-btn').addEventListener('click', handleConfigParse);
-
-  // 命令行解析事件监听器
-  document.getElementById('parse-command-btn').addEventListener('click', parseCommandLine);
-
-  // 连接WebSocket
-  connectWebSocket();
-});
-
 // 初始化标签页切换
 function initTabSwitching() {
+  console.log('初始化标签页切换');
+  const tabBtns = document.querySelectorAll('.tab-btn');
+  const tabContents = document.querySelectorAll('.tab-content');
+
+  if (!tabBtns || !tabContents || tabBtns.length === 0) {
+    console.error('无法找到标签页按钮或内容元素');
+    return;
+  }
+
   tabBtns.forEach(btn => {
     btn.addEventListener('click', () => {
       const tabId = btn.getAttribute('data-tab');
-      switchTab(tabId);
+      if (tabId) {
+        switchTab(tabId);
+      }
     });
   });
+
+  // 为"添加第一个MCP"按钮添加事件监听
+  const addFirstMcpBtn = document.querySelector('.add-first-mcp-btn');
+  if (addFirstMcpBtn) {
+    addFirstMcpBtn.addEventListener('click', () => {
+      switchTab('add-mcp');
+    });
+  }
 }
 
 // 切换标签页
 function switchTab(tabId) {
-  // 移除所有活动状态
+  console.log(`切换到标签页: ${tabId}`);
+
+  if (!tabId) {
+    console.error('无法切换标签页: 未提供标签页ID');
+    return;
+  }
+
+  // 获取所有标签页按钮和内容
+  const tabBtns = document.querySelectorAll('.tab-btn');
+  const tabContents = document.querySelectorAll('.tab-content');
+
+  if (!tabBtns || !tabContents) {
+    console.error('无法切换标签页: 未找到标签页元素');
+    return;
+  }
+
+  // 先隐藏所有标签页，移除所有活动状态
   tabBtns.forEach(btn => btn.classList.remove('active'));
   tabContents.forEach(content => content.classList.remove('active'));
 
-  // 设置当前活动标签
-  document.querySelector(`[data-tab="${tabId}"]`).classList.add('active');
-  document.getElementById(tabId).classList.add('active');
+  // 激活目标标签页
+  const targetBtn = document.querySelector(`.tab-btn[data-tab="${tabId}"]`);
+  const targetContent = document.getElementById(tabId);
+
+  if (targetBtn && targetContent) {
+    targetBtn.classList.add('active');
+    targetContent.classList.add('active');
+
+    // 如果切换到MCP列表，尝试重新渲染列表
+    if (tabId === 'list-mcp') {
+      try {
+        renderMcpList();
+      } catch (e) {
+        console.error('渲染MCP列表失败:', e);
+      }
+    }
+  } else {
+    console.error(`无法找到标签页 ${tabId} 的按钮或内容元素`);
+  }
 }
 
 // 初始化表单监听器
 function initFormListeners() {
+  console.log('初始化表单监听器');
+
+  // 检查必要的DOM元素是否存在
+  const serverTypeSelect = document.getElementById('server-type');
+  const serverNameInput = document.getElementById('server-name');
+  const serverCommandInput = document.getElementById('server-command');
+  const serverArgsInput = document.getElementById('server-args');
+  const serverEnvInput = document.getElementById('server-env');
+  const serverUrlInput = document.getElementById('server-url');
+  const commandGroup = document.getElementById('command-group');
+  const argsGroup = document.getElementById('args-group');
+  const envGroup = document.getElementById('env-group');
+  const urlGroup = document.getElementById('url-group');
+  const addMcpBtn = document.getElementById('add-mcp-btn');
+
+  if (
+    !serverTypeSelect ||
+    !serverNameInput ||
+    !serverCommandInput ||
+    !serverArgsInput ||
+    !serverEnvInput ||
+    !serverUrlInput ||
+    !commandGroup ||
+    !argsGroup ||
+    !envGroup ||
+    !urlGroup ||
+    !addMcpBtn
+  ) {
+    console.error('初始化表单失败: 某些必要的DOM元素不存在');
+    return;
+  }
+
   // 监听服务器类型变化，切换表单
   serverTypeSelect.addEventListener('change', () => {
     const selectedType = serverTypeSelect.value;
@@ -1772,6 +1870,23 @@ function initFormListeners() {
 
 // 验证表单
 function validateForm() {
+  const serverNameInput = document.getElementById('server-name');
+  const serverTypeSelect = document.getElementById('server-type');
+  const serverCommandInput = document.getElementById('server-command');
+  const serverUrlInput = document.getElementById('server-url');
+  const addMcpBtn = document.getElementById('add-mcp-btn');
+
+  if (
+    !serverNameInput ||
+    !serverTypeSelect ||
+    !serverCommandInput ||
+    !serverUrlInput ||
+    !addMcpBtn
+  ) {
+    console.error('验证表单失败: 某些必要的DOM元素不存在');
+    return false;
+  }
+
   const serverName = serverNameInput.value.trim();
   const serverType = serverTypeSelect.value;
   let isValid = !!serverName;
@@ -1787,602 +1902,35 @@ function validateForm() {
   return isValid;
 }
 
-// 处理预设选择
-function handlePresetSelect() {
-  const selectedPreset = presetMcpSelect.value;
-
-  if (selectedPreset && MCP_PRESETS[selectedPreset]) {
-    const preset = MCP_PRESETS[selectedPreset];
-
-    // 将预设转换为JSON配置格式
-    const jsonConfig = {
-      mcpServers: {
-        [preset.name]: {
-          command: preset.command,
-          args: preset.args,
-          env: preset.env,
-        },
-      },
-    };
-
-    // 填充到JSON输入框并格式化
-    document.getElementById('config-json').value = JSON.stringify(jsonConfig, null, 2);
-
-    // 填充表单
-    serverNameInput.value = preset.name;
-    serverCommandInput.value = preset.command;
-    serverArgsInput.value = preset.args.join('\n');
-
-    // 格式化环境变量
-    const envText = Object.entries(preset.env)
-      .map(([key, value]) => `${key}=${value}`)
-      .join('\n');
-    serverEnvInput.value = envText;
-
-    // 切换到stdio类型
-    serverTypeSelect.value = 'stdio';
-    serverTypeSelect.dispatchEvent(new Event('change'));
-
-    // 验证表单
-    validateForm();
-
-    // 重置选择器
-    presetMcpSelect.value = '';
-
-    toastManager.showToast(`已加载预设: ${preset.name}`, 'info');
-  }
-}
-
-// 处理配置文件导入
-function handleConfigImport() {
-  const file = configFileInput.files[0];
-
-  if (!file) {
-    toastManager.showToast('请选择配置文件', 'error');
-    return;
-  }
-
-  const reader = new FileReader();
-
-  reader.onload = e => {
-    try {
-      const config = JSON.parse(e.target.result);
-
-      if (!config.mcpServers || typeof config.mcpServers !== 'object') {
-        throw new Error('无效的配置文件格式');
-      }
-
-      // 添加所有配置的MCP
-      const mcpPromises = [];
-
-      for (const [name, mcpConfig] of Object.entries(config.mcpServers)) {
-        const payload = {
-          sessionId,
-          name,
-          clientType: 'stdio',
-          command: mcpConfig.command,
-          args: mcpConfig.args,
-          env: mcpConfig.env,
-        };
-
-        mcpPromises.push(mcpManager.addMcp(payload));
-      }
-
-      Promise.all(mcpPromises)
-        .then(() => {
-          toastManager.showToast('配置文件导入成功', 'success');
-          switchTab('list-mcp');
-        })
-        .catch(error => {
-          toastManager.showToast(`导入失败: ${error.message}`, 'error');
-        });
-    } catch (error) {
-      toastManager.showToast(`配置文件解析失败: ${error.message}`, 'error');
-    }
-  };
-
-  reader.readAsText(file);
-}
-
-// JSON配置处理函数
-function validateJSON() {
-  const configJson = document.getElementById('config-json').value.trim();
-
-  if (!configJson) {
-    toastManager.showToast('请输入配置信息', 'error');
-    return false;
-  }
-
-  try {
-    const config = JSON.parse(configJson);
-
-    if (!config.mcpServers || typeof config.mcpServers !== 'object') {
-      toastManager.showToast('无效的配置格式，需要包含mcpServers对象', 'error');
-      return false;
-    }
-
-    toastManager.showToast('JSON格式有效', 'success');
-    return true;
-  } catch (error) {
-    toastManager.showToast(`JSON格式无效: ${error.message}`, 'error');
-    return false;
-  }
-}
-
-function formatJSON() {
-  const configJson = document.getElementById('config-json').value.trim();
-
-  if (!configJson) {
-    toastManager.showToast('请输入配置信息', 'error');
-    return;
-  }
-
-  try {
-    const parsed = JSON.parse(configJson);
-    document.getElementById('config-json').value = JSON.stringify(parsed, null, 2);
-    toastManager.showToast('已格式化JSON', 'success');
-  } catch (error) {
-    toastManager.showToast(`无法格式化: ${error.message}`, 'error');
-  }
-}
-
-function clearJSON() {
-  document.getElementById('config-json').value = '';
-}
-
-function handleConfigParse() {
-  const configJson = document.getElementById('config-json').value.trim();
-
-  if (!configJson) {
-    toastManager.showToast('请输入配置信息', 'error');
-    return;
-  }
-
-  try {
-    const config = JSON.parse(configJson);
-
-    if (!config.mcpServers || typeof config.mcpServers !== 'object') {
-      throw new Error('无效的配置格式，需要包含mcpServers对象');
-    }
-
-    // 添加所有配置的MCP
-    const mcpPromises = [];
-
-    for (const [name, mcpConfig] of Object.entries(config.mcpServers)) {
-      const payload = {
-        sessionId,
-        name,
-        clientType: 'stdio',
-        command: mcpConfig.command,
-        args: Array.isArray(mcpConfig.args) ? mcpConfig.args : [],
-        env: mcpConfig.env || {},
-      };
-
-      mcpPromises.push(mcpManager.addMcp(payload));
-    }
-
-    Promise.all(mcpPromises)
-      .then(() => {
-        toastManager.showToast('配置已成功应用', 'success');
-        switchTab('list-mcp');
-        // 清空输入框
-        document.getElementById('config-json').value = '';
-      })
-      .catch(error => {
-        toastManager.showToast(`应用配置失败: ${error.message}`, 'error');
-      });
-  } catch (error) {
-    toastManager.showToast(`JSON解析失败: ${error.message}`, 'error');
-  }
-}
-
-// 命令行解析函数
-function parseCommandLine() {
-  const commandLine = document.getElementById('command-line-input').value.trim();
-
-  if (!commandLine) {
-    toastManager.showToast('请输入命令行', 'error');
-    return;
-  }
-
-  try {
-    // 解析命令行
-    const parsed = parseCommandToConfig(commandLine);
-
-    // 显示生成的JSON配置
-    document.getElementById('config-json').value = JSON.stringify(parsed, null, 2);
-
-    // 自动切换到配置粘贴区域
-    const configPasteSection = document.querySelector('.config-paste-section');
-    configPasteSection.scrollIntoView({ behavior: 'smooth' });
-
-    toastManager.showToast('已解析命令行为配置', 'success');
-  } catch (error) {
-    toastManager.showToast(`解析失败: ${error.message}`, 'error');
-  }
-}
-
-// 命令行解析辅助函数
-function parseCommandToConfig(commandLine) {
-  const parts = parseCommandLineString(commandLine);
-
-  if (parts.length === 0) {
-    throw new Error('无效的命令行');
-  }
-
-  const command = parts[0];
-  const args = [];
-  const env = {};
-  let serverName = '';
-
-  // 解析参数
-  for (let i = 1; i < parts.length; i++) {
-    const part = parts[i];
-
-    // 检查是否是环境变量格式 (--KEY=value)
-    if (part.startsWith('--') && part.includes('=')) {
-      const [key, ...valueParts] = part.substring(2).split('=');
-      env[key] = valueParts.join('=');
-    } else {
-      args.push(part);
-
-      // 尝试从参数中提取服务器名称
-      if (part.startsWith('@') && !serverName) {
-        // 例如 @amap/amap-maps-mcp-server -> amap-maps
-        serverName = part.split('/').pop().replace('-mcp-server', '');
-      }
-    }
-  }
-
-  // 如果没有解析出服务器名称，使用默认名称
-  if (!serverName) {
-    serverName = `mcp-${Date.now()}`;
-  }
-
-  // 构建配置对象
-  const config = {
-    mcpServers: {
-      [serverName]: {
-        command: command,
-        args: args,
-      },
-    },
-  };
-
-  // 只有当有环境变量时才添加env字段
-  if (Object.keys(env).length > 0) {
-    config.mcpServers[serverName].env = env;
-  }
-
-  return config;
-}
-
-// 解析命令行字符串的辅助函数（处理引号等情况）
-function parseCommandLineString(commandLine) {
-  const parts = [];
-  let current = '';
-  let inQuotes = false;
-  let quoteChar = '';
-
-  for (let i = 0; i < commandLine.length; i++) {
-    const char = commandLine[i];
-
-    if ((char === '"' || char === "'") && (!inQuotes || char === quoteChar)) {
-      inQuotes = !inQuotes;
-      if (inQuotes) {
-        quoteChar = char;
-      } else {
-        quoteChar = '';
-      }
-    } else if (char === ' ' && !inQuotes) {
-      if (current) {
-        parts.push(current);
-        current = '';
-      }
-    } else {
-      current += char;
-    }
-  }
-
-  if (current) {
-    parts.push(current);
-  }
-
-  return parts;
-}
-
-// 从本地存储恢复会话
-function restoreSession() {
-  const savedSessionId = localStorage.getItem('mcpSessionId');
-
-  if (savedSessionId) {
-    // 验证会话是否存在
-    fetch(`${API_BASE_URL}/mcp?sessionId=${savedSessionId}`)
-      .then(response => {
-        if (response.ok) {
-          return response.json();
-        } else {
-          // 如果会话不存在，创建新会话
-          console.log('保存的会话无效，创建新会话');
-          throw new Error('会话不存在或已过期');
-        }
-      })
-      .then(data => {
-        if (data.success) {
-          sessionId = savedSessionId;
-          updateSessionDisplay();
-          connectWebSocket();
-          mcpList = data.mcps || [];
-          renderMcpList();
-          eventBus.emit('mcps-updated', mcpList);
-        } else {
-          throw new Error(data.error || '无法加载MCP列表');
-        }
-      })
-      .catch(error => {
-        console.error('恢复会话失败:', error);
-        // 创建新会话
-        localStorage.removeItem('mcpSessionId');
-        sessionManager.createNewSession();
-      });
-  } else {
-    sessionManager.createNewSession();
-  }
-}
-
-// 连接WebSocket
-function connectWebSocket() {
-  if (socket) {
-    socket.disconnect();
-  }
-
-  socket = io();
-
-  socket.on('connect', () => {
-    console.log('WebSocket已连接');
-    socket.emit('join_session', sessionId);
-  });
-
-  socket.on('mcp_connected', mcp => {
-    const existingIndex = mcpList.findIndex(m => m.name === mcp.name);
-
-    if (existingIndex >= 0) {
-      mcpList[existingIndex] = mcp;
-    } else {
-      mcpList.push(mcp);
-    }
-
-    renderMcpList();
-  });
-
-  socket.on('mcp_disconnected', data => {
-    mcpList = mcpList.filter(mcp => mcp.name !== data.name);
-    renderMcpList();
-  });
-
-  socket.on('disconnect', () => {
-    console.log('WebSocket已断开');
-  });
-}
-
-// 更新会话显示
-function updateSessionDisplay() {
-  sessionIdDisplay.textContent = `会话ID: ${sessionId.substring(0, 8)}...`;
-}
-
-// 渲染MCP列表
-function renderMcpList() {
-  // 清空列表（除了空状态提示）
-  const items = mcpListContainer.querySelectorAll('.mcp-item');
-  items.forEach(item => item.remove());
-
-  // 更新计数
-  mcpCountElement.textContent = mcpList.length;
-
-  // 显示或隐藏空状态
-  if (mcpList.length === 0) {
-    emptyState.style.display = 'block';
-    return;
-  } else {
-    emptyState.style.display = 'none';
-  }
-
-  // 渲染列表项
-  mcpList.forEach(mcp => {
-    const template = document.getElementById('mcp-item-template');
-    const clone = document.importNode(template.content, true);
-
-    // 填充数据
-    clone.querySelector('.mcp-name').textContent = mcp.name;
-    clone.querySelector('.mcp-type').textContent = `类型: ${mcp.clientType}`;
-
-    const statusElement = clone.querySelector('.mcp-status');
-    statusElement.textContent = `状态: ${mcp.status === 'connected' ? '已连接' : '已断开'}`;
-    statusElement.classList.add(mcp.status);
-
-    // 添加工具列表和交互
-    const toolsContainer = document.createElement('div');
-    toolsContainer.className = 'mcp-tools-container';
-
-    const toolsElement = clone.querySelector('.mcp-tools');
-    toolsElement.textContent = '工具: ';
-
-    if (mcp.tools && mcp.tools.length > 0) {
-      mcp.tools.forEach((tool, index) => {
-        const toolButton = document.createElement('button');
-        toolButton.className = 'tool-button';
-        toolButton.textContent = tool.name;
-        toolButton.title = tool.description || '';
-        toolButton.addEventListener('click', () => showToolDialog(mcp.name, tool.name));
-
-        if (index > 0) {
-          toolsContainer.appendChild(document.createTextNode(' '));
-        }
-        toolsContainer.appendChild(toolButton);
-      });
-    } else {
-      toolsElement.textContent += '无可用工具';
-    }
-
-    toolsElement.appendChild(toolsContainer);
-
-    // 添加事件监听器
-    const reconnectBtn = clone.querySelector('.reconnect-btn');
-    reconnectBtn.addEventListener('click', () => reconnectMcp(mcp));
-
-    const deleteBtn = clone.querySelector('.delete-btn');
-    deleteBtn.addEventListener('click', () => deleteMcp(mcp));
-
-    // 将项目添加到列表
-    mcpListContainer.appendChild(clone);
-  });
-}
-
-// 工具调用函数
-function callMcpTool(mcpName, toolName, params) {
-  if (!sessionId) return Promise.reject(new Error('未连接会话'));
-
-  return fetch(`${API_BASE_URL}/mcp/call`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      sessionId,
-      mcpName,
-      tool: toolName,
-      params,
-    }),
-  }).then(response => response.json());
-}
-
-// 显示工具对话框
-function showToolDialog(mcpName, toolName) {
-  // 根据工具名创建相应的对话框
-  let dialogHTML = '';
-  let params = {};
-
-  switch (toolName) {
-    case 'search':
-      dialogHTML = `
-        <h3>搜索工具</h3>
-        <div class="form-group">
-          <label for="search-query">搜索关键词</label>
-          <input type="text" id="search-query" placeholder="输入关键词...">
-        </div>
-      `;
-      break;
-    case 'calculator':
-      dialogHTML = `
-        <h3>计算器工具</h3>
-        <div class="form-group">
-          <label for="calc-expression">数学表达式</label>
-          <input type="text" id="calc-expression" placeholder="例如: 2+2*3">
-        </div>
-      `;
-      break;
-    case 'weather':
-      dialogHTML = `
-        <h3>天气工具</h3>
-        <div class="form-group">
-          <label for="weather-city">城市名称</label>
-          <input type="text" id="weather-city" placeholder="例如: 北京">
-        </div>
-      `;
-      break;
-    default:
-      dialogHTML = `<h3>${toolName}</h3><p>此工具暂无交互界面</p>`;
-  }
-
-  // 创建对话框
-  const dialog = document.createElement('div');
-  dialog.className = 'tool-dialog';
-  dialog.innerHTML = `
-    <div class="tool-dialog-content">
-      ${dialogHTML}
-      <div class="dialog-actions">
-        <button class="cancel-btn">取消</button>
-        <button class="execute-btn">执行</button>
-      </div>
-      <div class="result-container" style="display:none;"></div>
-    </div>
-  `;
-
-  document.body.appendChild(dialog);
-
-  // 添加事件监听
-  dialog.querySelector('.cancel-btn').addEventListener('click', () => {
-    dialog.remove();
-  });
-
-  dialog.querySelector('.execute-btn').addEventListener('click', () => {
-    // 获取参数
-    switch (toolName) {
-      case 'search':
-        params = { query: dialog.querySelector('#search-query').value };
-        break;
-      case 'calculator':
-        params = { expression: dialog.querySelector('#calc-expression').value };
-        break;
-      case 'weather':
-        params = { city: dialog.querySelector('#weather-city').value };
-        break;
-    }
-
-    // 执行工具调用
-    const executeBtn = dialog.querySelector('.execute-btn');
-    executeBtn.disabled = true;
-    executeBtn.textContent = '执行中...';
-
-    callMcpTool(mcpName, toolName, params)
-      .then(result => {
-        const resultContainer = dialog.querySelector('.result-container');
-        resultContainer.style.display = 'block';
-
-        if (result.success) {
-          resultContainer.innerHTML = `
-            <div class="success-result">
-              <h4>执行结果</h4>
-              <pre>${JSON.stringify(result.result, null, 2)}</pre>
-            </div>
-          `;
-        } else {
-          resultContainer.innerHTML = `
-            <div class="error-result">
-              <h4>执行失败</h4>
-              <p>${result.error}</p>
-            </div>
-          `;
-        }
-      })
-      .catch(error => {
-        const resultContainer = dialog.querySelector('.result-container');
-        resultContainer.style.display = 'block';
-        resultContainer.innerHTML = `
-          <div class="error-result">
-            <h4>执行失败</h4>
-            <p>${error.message}</p>
-          </div>
-        `;
-      })
-      .finally(() => {
-        executeBtn.disabled = false;
-        executeBtn.textContent = '执行';
-      });
-  });
-}
-
-// 创建新会话
-function createNewSession() {
-  sessionManager.createNewSession().catch(error => {
-    console.error('创建会话失败:', error);
-    toastManager.showToast('创建会话失败: ' + error.message, 'error');
-  });
-}
-
 // 添加MCP
 function addMcp() {
-  if (!validateForm() || !sessionId) return;
+  console.log('尝试添加MCP');
+
+  if (!validateForm() || !sessionId) {
+    console.error('表单验证失败或会话ID不存在');
+    return;
+  }
+
+  const serverNameInput = document.getElementById('server-name');
+  const serverTypeSelect = document.getElementById('server-type');
+  const serverCommandInput = document.getElementById('server-command');
+  const serverArgsInput = document.getElementById('server-args');
+  const serverEnvInput = document.getElementById('server-env');
+  const serverUrlInput = document.getElementById('server-url');
+  const addMcpBtn = document.getElementById('add-mcp-btn');
+
+  if (
+    !serverNameInput ||
+    !serverTypeSelect ||
+    !serverCommandInput ||
+    !serverArgsInput ||
+    !serverEnvInput ||
+    !serverUrlInput ||
+    !addMcpBtn
+  ) {
+    console.error('添加MCP失败: 某些必要的DOM元素不存在');
+    return;
+  }
 
   const name = serverNameInput.value.trim();
   const type = serverTypeSelect.value;
@@ -2400,7 +1948,9 @@ function addMcp() {
     if (command) {
       payload.command = command;
     } else {
-      toastManager.showToast('请输入命令', 'error');
+      if (toastManager && typeof toastManager.showToast === 'function') {
+        toastManager.showToast('请输入命令', 'error');
+      }
       return;
     }
 
@@ -2457,32 +2007,67 @@ function addMcp() {
 
   // 显示加载状态
   addMcpBtn.disabled = true;
-  toastManager.showToast('正在添加MCP...', 'info');
+  if (toastManager && typeof toastManager.showToast === 'function') {
+    toastManager.showToast('正在添加MCP...', 'info');
+  }
 
   console.log('准备发送的 payload:', JSON.stringify(payload, null, 2));
 
-  mcpManager
-    .addMcp(payload)
-    .then(mcp => {
-      // 重置表单
-      resetForm();
+  if (mcpManager && typeof mcpManager.addMcp === 'function') {
+    mcpManager
+      .addMcp(payload)
+      .then(mcp => {
+        // 重置表单
+        resetForm();
 
-      // 切换到列表标签页
-      switchTab('list-mcp');
+        // 确保MCP列表已更新并渲染后再切换标签页
+        setTimeout(() => {
+          // 切换到列表标签页
+          try {
+            switchTab('list-mcp');
+          } catch (e) {
+            console.error('切换到MCP列表标签页失败:', e);
+          }
+        }, 100);
 
-      toastManager.showToast('MCP已添加', 'success');
-    })
-    .catch(error => {
-      console.error('添加MCP失败:', error);
-      toastManager.showToast('添加MCP失败: ' + error.message, 'error');
-    })
-    .finally(() => {
-      addMcpBtn.disabled = false;
-    });
+        if (toastManager && typeof toastManager.showToast === 'function') {
+          toastManager.showToast('MCP已添加', 'success');
+        }
+      })
+      .catch(error => {
+        console.error('添加MCP失败:', error);
+        if (toastManager && typeof toastManager.showToast === 'function') {
+          toastManager.showToast('添加MCP失败: ' + error.message, 'error');
+        }
+      })
+      .finally(() => {
+        addMcpBtn.disabled = false;
+      });
+  } else {
+    console.error('无法添加MCP: mcpManager不可用');
+    addMcpBtn.disabled = false;
+  }
 }
 
 // 重置表单
 function resetForm() {
+  const serverNameInput = document.getElementById('server-name');
+  const serverCommandInput = document.getElementById('server-command');
+  const serverArgsInput = document.getElementById('server-args');
+  const serverEnvInput = document.getElementById('server-env');
+  const serverUrlInput = document.getElementById('server-url');
+
+  if (
+    !serverNameInput ||
+    !serverCommandInput ||
+    !serverArgsInput ||
+    !serverEnvInput ||
+    !serverUrlInput
+  ) {
+    console.error('重置表单失败: 某些必要的DOM元素不存在');
+    return;
+  }
+
   serverNameInput.value = '';
   serverCommandInput.value = '';
   serverArgsInput.value = '';
@@ -2491,21 +2076,1132 @@ function resetForm() {
   validateForm();
 }
 
+// 恢复会话
+function restoreSession() {
+  console.log('尝试恢复会话...');
+
+  // 尝试从本地存储中恢复会话ID
+  const savedSessionId = localStorage.getItem('mcpSessionId');
+  const savedUserId = localStorage.getItem('mcpUserId');
+
+  if (savedSessionId) {
+    sessionId = savedSessionId;
+
+    // 确保userId有值
+    if (savedUserId && savedUserId !== 'undefined') {
+      userId = savedUserId;
+    } else {
+      // 如果没有用户ID或是undefined，设置为默认值
+      userId = 'anonymous';
+      localStorage.setItem('mcpUserId', userId);
+    }
+
+    console.log(`从本地存储恢复会话: ${sessionId}, 用户ID: ${userId}`);
+
+    // 更新UI
+    updateSessionDisplay();
+
+    // 连接WebSocket
+    connectWebSocket();
+
+    // 加载MCP列表
+    if (mcpManager && typeof mcpManager.loadMcpList === 'function') {
+      mcpManager.loadMcpList().catch(error => {
+        console.error('加载MCP列表失败:', error);
+        // 如果失败，可能是会话已过期，创建新会话
+        if (sessionManager && typeof sessionManager.createNewSession === 'function') {
+          sessionManager.createNewSession();
+        } else {
+          console.error('无法创建新会话: sessionManager不可用');
+        }
+      });
+    } else {
+      console.error('无法加载MCP列表: mcpManager.loadMcpList不可用');
+    }
+  } else {
+    console.log('没有保存的会话，将创建新会话');
+    // 如果没有保存的会话，创建新会话
+    if (sessionManager && typeof sessionManager.createNewSession === 'function') {
+      sessionManager.createNewSession();
+    } else {
+      console.error('无法创建新会话: sessionManager不可用');
+    }
+  }
+}
+
+// 连接WebSocket
+function connectWebSocket() {
+  console.log('尝试连接WebSocket...');
+
+  if (!sessionId) {
+    console.error('无法连接WebSocket: 会话ID不存在');
+    return;
+  }
+
+  if (typeof io !== 'function') {
+    console.error('无法连接WebSocket: socket.io不可用');
+    return;
+  }
+
+  if (socket) {
+    console.log('关闭现有的WebSocket连接');
+    socket.disconnect();
+  }
+
+  try {
+    socket = io();
+
+    socket.on('connect', () => {
+      console.log('WebSocket已连接');
+      socket.emit('join_session', sessionId);
+    });
+
+    socket.on('mcp_connected', mcp => {
+      console.log('收到MCP连接事件:', mcp);
+
+      if (!Array.isArray(mcpList)) {
+        mcpList = [];
+      }
+
+      const existingIndex = mcpList.findIndex(m => m.name === mcp.name);
+
+      if (existingIndex >= 0) {
+        mcpList[existingIndex] = mcp;
+      } else {
+        mcpList.push(mcp);
+      }
+
+      renderMcpList();
+
+      if (eventBus && typeof eventBus.emit === 'function') {
+        eventBus.emit('mcps-updated', mcpList);
+      }
+    });
+
+    socket.on('mcp_disconnected', data => {
+      console.log('收到MCP断开连接事件:', data);
+
+      if (!Array.isArray(mcpList)) {
+        return;
+      }
+
+      mcpList = mcpList.filter(mcp => mcp.name !== data.name);
+      renderMcpList();
+
+      if (eventBus && typeof eventBus.emit === 'function') {
+        eventBus.emit('mcps-updated', mcpList);
+      }
+    });
+
+    socket.on('disconnect', () => {
+      console.log('WebSocket已断开');
+    });
+
+    console.log('WebSocket监听器设置完成');
+  } catch (error) {
+    console.error('设置WebSocket连接时出错:', error);
+  }
+}
+
+// 更新会话显示
+function updateSessionDisplay() {
+  const sessionDisplay = document.getElementById('session-id-display');
+  if (!sessionDisplay) {
+    console.error('无法更新会话显示: session-id-display元素不存在');
+    return;
+  }
+
+  if (sessionId) {
+    // 创建会话ID显示元素
+    const sessionIdSpan = document.createElement('span');
+    sessionIdSpan.textContent = `会话ID: ${String(sessionId).slice(0, 8)}...`;
+
+    // 添加分隔符
+    const separator = document.createElement('span');
+    separator.textContent = ' | ';
+
+    // 创建用户ID显示元素（可点击）
+    const userIdSpan = document.createElement('span');
+    userIdSpan.classList.add('editable-user-id');
+    userIdSpan.title = '点击编辑用户ID';
+
+    if (userId) {
+      userIdSpan.textContent = `用户ID: ${String(userId).slice(0, 8)}...`;
+    } else {
+      userIdSpan.textContent = `用户ID: 未知`;
+    }
+
+    // 添加点击事件
+    userIdSpan.addEventListener('click', function () {
+      const newUserId = prompt('请输入您的用户ID:', userId || '');
+      if (newUserId !== null && newUserId.trim() !== '') {
+        userId = newUserId.trim();
+        localStorage.setItem('mcpUserId', userId);
+        updateSessionDisplay();
+        toastManager.showToast('用户ID已更新', 'success');
+      }
+    });
+
+    // 清空现有内容并添加新元素
+    sessionDisplay.innerHTML = '';
+    sessionDisplay.appendChild(sessionIdSpan);
+    sessionDisplay.appendChild(separator);
+    sessionDisplay.appendChild(userIdSpan);
+  } else {
+    sessionDisplay.textContent = '未连接';
+  }
+}
+
+// 渲染MCP列表
+function renderMcpList() {
+  console.log('尝试渲染MCP列表...');
+
+  // 查找MCP列表容器
+  let mcpListContainer = document.getElementById('mcp-list');
+  let emptyState = document.getElementById('empty-state');
+  let mcpCountSpan = document.getElementById('mcp-count');
+
+  // 初始化MCP列表（如果尚未初始化）
+  if (!Array.isArray(mcpList)) {
+    mcpList = [];
+    console.log('初始化mcpList为空数组');
+  }
+
+  // 如果MCP列表容器不存在，尝试找到list-mcp标签页容器并创建必要的元素
+  if (!mcpListContainer) {
+    const listMcpTab = document.getElementById('list-mcp');
+    if (listMcpTab) {
+      // 创建MCP列表容器
+      console.log('创建MCP列表容器');
+      mcpListContainer = document.createElement('div');
+      mcpListContainer.id = 'mcp-list';
+      mcpListContainer.className = 'mcp-list';
+
+      // 创建空状态元素（如果不存在）
+      if (!emptyState) {
+        console.log('创建空状态元素');
+        emptyState = document.createElement('div');
+        emptyState.id = 'empty-state';
+        emptyState.className = 'empty-state';
+        emptyState.innerHTML = `
+          <div class="empty-icon">📋</div>
+          <div class="empty-text">还没有MCP服务器</div>
+          <button class="add-first-mcp-btn">添加第一个MCP</button>
+        `;
+      }
+
+      // 创建MCP计数元素父容器
+      const mcpCountContainer = document.createElement('div');
+      mcpCountContainer.className = 'mcp-count-container';
+      mcpCountContainer.innerHTML = '当前MCP: <span id="mcp-count">0</span>';
+
+      // 清空标签页内容并重新添加元素
+      listMcpTab.innerHTML = '';
+      listMcpTab.appendChild(mcpCountContainer);
+      listMcpTab.appendChild(emptyState);
+      listMcpTab.appendChild(mcpListContainer);
+
+      // 获取新创建的MCP计数元素
+      mcpCountSpan = document.getElementById('mcp-count');
+
+      // 为"添加第一个MCP"按钮添加事件监听
+      const addFirstMcpBtn = emptyState.querySelector('.add-first-mcp-btn');
+      if (addFirstMcpBtn) {
+        addFirstMcpBtn.addEventListener('click', () => {
+          switchTab('add-mcp');
+        });
+      }
+    } else {
+      console.error('渲染MCP列表失败: 找不到list-mcp标签页');
+      return;
+    }
+  }
+
+  // 此时应该已经有必要的DOM元素了
+  if (!mcpListContainer || !emptyState || !mcpCountSpan) {
+    console.error('渲染MCP列表失败: 无法创建必要的DOM元素');
+    return;
+  }
+
+  // 更新MCP数量显示
+  mcpCountSpan.textContent = mcpList.length;
+
+  if (mcpList.length === 0) {
+    // 显示空状态
+    emptyState.style.display = 'flex';
+    mcpListContainer.style.display = 'none';
+    return;
+  }
+
+  // 隐藏空状态，显示列表容器
+  emptyState.style.display = 'none';
+  mcpListContainer.style.display = 'flex';
+
+  // 清空现有列表
+  mcpListContainer.innerHTML = '';
+
+  // 添加MCP卡片
+  mcpList.forEach(mcp => {
+    try {
+      const mcpCard = document.createElement('div');
+      mcpCard.className = 'mcp-card';
+
+      // 如果是从其他会话共享来的MCP，添加特殊样式
+      if (mcp.isFromOtherSession) {
+        mcpCard.classList.add('shared-mcp');
+      }
+
+      // 确保mcp.tools是一个数组
+      const tools = Array.isArray(mcp.tools) ? mcp.tools : [];
+
+      const toolsList =
+        tools.length > 0
+          ? tools
+              .map(
+                tool => `
+        <div class="tool-item" onclick="showToolDialog('${mcp.name}', '${tool.name}')">
+          <div class="tool-name">${tool.name}</div>
+          <div class="tool-description">${tool.description || '无描述'}</div>
+        </div>
+      `,
+              )
+              .join('')
+          : '<div class="no-tools">无可用工具</div>';
+
+      mcpCard.innerHTML = `
+        <div class="mcp-header">
+          <div class="mcp-name">${mcp.name}</div>
+          <div class="mcp-type">${mcp.clientType}</div>
+          ${mcp.isFromOtherSession ? '<div class="mcp-shared-badge">共享</div>' : ''}
+        </div>
+        <div class="mcp-status">
+          <span class="status-label">状态:</span>
+          <span class="status-value ${
+            mcp.status === 'connected' ? 'status-running' : 'status-error'
+          }">${mcp.status === 'connected' ? '运行中' : '异常'}</span>
+        </div>
+        <div class="mcp-details">
+          ${mcp.url ? `<div class="mcp-url">URL: ${mcp.url}</div>` : ''}
+          ${
+            mcp.command
+              ? `<div class="mcp-command">命令: ${mcp.command} ${
+                  Array.isArray(mcp.args) ? mcp.args.join(' ') : ''
+                }</div>`
+              : ''
+          }
+        </div>
+        <div class="mcp-tools">
+          <div class="tools-header">可用工具:</div>
+          <div class="tools-list">
+            ${toolsList}
+          </div>
+        </div>
+        <div class="mcp-actions">
+          <button class="reconnect-btn" onclick="reconnectMcp(${JSON.stringify(mcp).replace(
+            /"/g,
+            '&quot;',
+          )})">重新连接</button>
+          <button class="delete-btn" onclick="deleteMcp(${JSON.stringify(mcp).replace(
+            /"/g,
+            '&quot;',
+          )})">断开连接</button>
+        </div>
+      `;
+
+      mcpListContainer.appendChild(mcpCard);
+    } catch (error) {
+      console.error('渲染MCP卡片时出错:', error, mcp);
+    }
+  });
+
+  console.log('MCP列表渲染完成');
+}
+
+// 主初始化函数
+function initApp() {
+  try {
+    console.log('初始化应用...');
+
+    // 获取关键DOM元素（使用全局变量）
+    window.presetMcpSelect = document.getElementById('preset-mcp-select');
+    window.importConfigBtn = document.getElementById('import-config-btn');
+    window.configFileInput = document.getElementById('config-file');
+
+    // 确认DOM元素已准备好
+    if (
+      !document.getElementById('session-id-display') ||
+      !document.getElementById('server-name') ||
+      !document.getElementById('server-type')
+    ) {
+      console.error('关键DOM元素未找到，延迟初始化...');
+      setTimeout(initApp, 100);
+      return;
+    }
+
+    // 初始化所有模块
+    eventBus.init();
+    toastManager.init();
+
+    // 初始化UI组件
+    initTabSwitching();
+
+    try {
+      initFormListeners();
+    } catch (error) {
+      console.error('初始化表单监听器失败:', error);
+    }
+
+    // 设置事件监听
+    const newSessionBtn = document.getElementById('new-session-btn');
+    if (newSessionBtn) {
+      newSessionBtn.addEventListener('click', () => {
+        if (sessionManager && typeof sessionManager.createNewSession === 'function') {
+          sessionManager.createNewSession().catch(error => {
+            console.error('创建会话失败:', error);
+            toastManager.showToast('创建会话失败: ' + error.message, 'error');
+          });
+        } else {
+          console.error('无法创建新会话: sessionManager不可用');
+        }
+      });
+    }
+
+    if (window.presetMcpSelect) {
+      window.presetMcpSelect.addEventListener('change', handlePresetSelect);
+    }
+
+    if (window.importConfigBtn && window.configFileInput) {
+      window.importConfigBtn.addEventListener('click', handleConfigImport);
+    }
+
+    // 添加基于ID的按钮监听
+    const buttonIds = [
+      'validate-json-btn',
+      'format-json-btn',
+      'clear-json-btn',
+      'parse-config-btn',
+      'parse-command-btn',
+      'import-config-btn',
+    ];
+
+    buttonIds.forEach(id => {
+      const btn = document.getElementById(id);
+      if (btn) {
+        switch (id) {
+          case 'validate-json-btn':
+            btn.addEventListener('click', validateJSON);
+            break;
+          case 'format-json-btn':
+            btn.addEventListener('click', formatJSON);
+            break;
+          case 'clear-json-btn':
+            btn.addEventListener('click', clearJSON);
+            break;
+          case 'parse-config-btn':
+            btn.addEventListener('click', handleConfigParse);
+            break;
+          case 'parse-command-btn':
+            btn.addEventListener('click', parseCommandLine);
+            break;
+        }
+      }
+    });
+
+    // 初始化Python和Git MCP模块
+    try {
+      if (pythonMcpManager && typeof pythonMcpManager.init === 'function') {
+        pythonMcpManager.init();
+      }
+
+      if (gitMcpManager && typeof gitMcpManager.init === 'function') {
+        gitMcpManager.init();
+      }
+    } catch (e) {
+      console.error('初始化Python或Git MCP模块失败:', e);
+    }
+
+    // 初始化聊天和测试模块
+    try {
+      if (chatModule && typeof chatModule.init === 'function') {
+        chatModule.init();
+      }
+
+      if (functionTestModule && typeof functionTestModule.init === 'function') {
+        functionTestModule.init();
+      }
+    } catch (e) {
+      console.error('初始化聊天或测试模块失败:', e);
+    }
+
+    // 初始化其他模块
+    try {
+      if (mcpManager && typeof mcpManager.init === 'function') {
+        mcpManager.init();
+      }
+
+      if (sessionManager && typeof sessionManager.init === 'function') {
+        sessionManager.init();
+      }
+    } catch (e) {
+      console.error('初始化其他模块失败:', e);
+    }
+
+    // 恢复会话
+    try {
+      restoreSession();
+    } catch (e) {
+      console.error('恢复会话失败:', e);
+      // 如果恢复会话失败，尝试创建新会话
+      try {
+        if (sessionManager && typeof sessionManager.createNewSession === 'function') {
+          console.log('尝试创建新会话...');
+          sessionManager.createNewSession();
+        } else {
+          console.error('无法创建新会话: sessionManager不可用');
+        }
+      } catch (err) {
+        console.error('创建新会话失败:', err);
+      }
+    }
+
+    console.log('应用初始化完成');
+  } catch (error) {
+    console.error('应用初始化失败:', error);
+    alert('初始化应用时出错，请刷新页面重试。详情请查看控制台。');
+  }
+}
+
+// 在DOM加载完成后初始化
+document.addEventListener('DOMContentLoaded', initApp);
+
 // 重新连接MCP
 function reconnectMcp(mcp) {
-  mcpManager.reconnectMcp(mcp).catch(error => {
-    console.error('重新连接MCP失败:', error);
-  });
+  console.log('尝试重新连接MCP:', mcp);
+
+  if (!mcpManager || typeof mcpManager.reconnectMcp !== 'function') {
+    console.error('无法重新连接MCP: mcpManager.reconnectMcp不可用');
+    return;
+  }
+
+  if (!mcp || !mcp.name) {
+    console.error('无法重新连接MCP: 无效的MCP对象');
+    return;
+  }
+
+  if (toastManager && typeof toastManager.showToast === 'function') {
+    toastManager.showToast(`正在重新连接 ${mcp.name}...`, 'info');
+  }
+
+  mcpManager
+    .reconnectMcp(mcp)
+    .then(updatedMcp => {
+      console.log(`${mcp.name} 已重新连接:`, updatedMcp);
+      if (toastManager && typeof toastManager.showToast === 'function') {
+        toastManager.showToast(`${mcp.name} 已重新连接`, 'success');
+      }
+    })
+    .catch(error => {
+      console.error('重新连接MCP失败:', error);
+      if (toastManager && typeof toastManager.showToast === 'function') {
+        toastManager.showToast(`重新连接 ${mcp.name} 失败: ${error.message}`, 'error');
+      }
+    });
 }
 
 // 删除MCP
 function deleteMcp(mcp) {
-  mcpManager.deleteMcp(mcp).catch(error => {
-    console.error('删除MCP失败:', error);
-  });
+  console.log('尝试删除MCP:', mcp);
+
+  if (!mcpManager || typeof mcpManager.deleteMcp !== 'function') {
+    console.error('无法删除MCP: mcpManager.deleteMcp不可用');
+    return;
+  }
+
+  if (!mcp || !mcp.name) {
+    console.error('无法删除MCP: 无效的MCP对象');
+    return;
+  }
+
+  if (toastManager && typeof toastManager.showToast === 'function') {
+    toastManager.showToast(`正在移除 ${mcp.name}...`, 'info');
+  }
+
+  mcpManager
+    .deleteMcp(mcp)
+    .then(() => {
+      console.log(`${mcp.name} 已删除`);
+      if (toastManager && typeof toastManager.showToast === 'function') {
+        toastManager.showToast(`${mcp.name} 已移除`, 'success');
+      }
+    })
+    .catch(error => {
+      console.error('删除MCP失败:', error);
+      if (toastManager && typeof toastManager.showToast === 'function') {
+        toastManager.showToast(`移除 ${mcp.name} 失败: ${error.message}`, 'error');
+      }
+    });
 }
 
-// 显示通知
-function showToast(message, type = 'info') {
-  toastManager.showToast(message, type);
+// 工具调用函数
+function callMcpTool(mcpName, toolName, params) {
+  console.log(`尝试调用MCP工具: ${mcpName}.${toolName}`, params);
+
+  if (!sessionId) {
+    console.error('无法调用MCP工具: 会话ID不存在');
+    return Promise.reject(new Error('未连接会话'));
+  }
+
+  return fetch(`${API_BASE_URL}/mcp/call`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      sessionId,
+      mcpName,
+      tool: toolName,
+      params,
+    }),
+  }).then(response => response.json());
+}
+
+// 显示工具对话框
+function showToolDialog(mcpName, toolName) {
+  console.log(`尝试显示工具对话框: ${mcpName}.${toolName}`);
+
+  // 根据工具名创建相应的对话框
+  let dialogHTML = '';
+  let params = {};
+
+  switch (toolName) {
+    case 'search':
+      dialogHTML = `
+        <h3>搜索工具</h3>
+        <div class="form-group">
+          <label for="search-query">搜索关键词</label>
+          <input type="text" id="search-query" placeholder="输入关键词...">
+        </div>
+      `;
+      break;
+    case 'calculator':
+      dialogHTML = `
+        <h3>计算器工具</h3>
+        <div class="form-group">
+          <label for="calc-expression">数学表达式</label>
+          <input type="text" id="calc-expression" placeholder="例如: 2+2*3">
+        </div>
+      `;
+      break;
+    case 'weather':
+      dialogHTML = `
+        <h3>天气工具</h3>
+        <div class="form-group">
+          <label for="weather-city">城市名称</label>
+          <input type="text" id="weather-city" placeholder="例如: 北京">
+        </div>
+      `;
+      break;
+    default:
+      dialogHTML = `<h3>${toolName}</h3><p>此工具暂无交互界面</p>`;
+  }
+
+  // 创建对话框
+  const dialog = document.createElement('div');
+  dialog.className = 'tool-dialog';
+  dialog.innerHTML = `
+    <div class="tool-dialog-content">
+      ${dialogHTML}
+      <div class="dialog-actions">
+        <button class="cancel-btn">取消</button>
+        <button class="execute-btn">执行</button>
+      </div>
+      <div class="result-container" style="display:none;"></div>
+    </div>
+  `;
+
+  document.body.appendChild(dialog);
+
+  // 添加事件监听
+  const cancelBtn = dialog.querySelector('.cancel-btn');
+  const executeBtn = dialog.querySelector('.execute-btn');
+
+  if (cancelBtn) {
+    cancelBtn.addEventListener('click', () => {
+      dialog.remove();
+    });
+  }
+
+  if (executeBtn) {
+    executeBtn.addEventListener('click', () => {
+      // 获取参数
+      try {
+        switch (toolName) {
+          case 'search':
+            const searchQuery = dialog.querySelector('#search-query');
+            params = { query: searchQuery ? searchQuery.value : '' };
+            break;
+          case 'calculator':
+            const calcExpression = dialog.querySelector('#calc-expression');
+            params = { expression: calcExpression ? calcExpression.value : '' };
+            break;
+          case 'weather':
+            const weatherCity = dialog.querySelector('#weather-city');
+            params = { city: weatherCity ? weatherCity.value : '' };
+            break;
+        }
+
+        // 执行工具调用
+        executeBtn.disabled = true;
+        executeBtn.textContent = '执行中...';
+
+        callMcpTool(mcpName, toolName, params)
+          .then(result => {
+            const resultContainer = dialog.querySelector('.result-container');
+            if (resultContainer) {
+              resultContainer.style.display = 'block';
+
+              if (result.success) {
+                resultContainer.innerHTML = `
+                  <div class="success-result">
+                    <h4>执行结果</h4>
+                    <pre>${JSON.stringify(result.result, null, 2)}</pre>
+                  </div>
+                `;
+              } else {
+                resultContainer.innerHTML = `
+                  <div class="error-result">
+                    <h4>执行失败</h4>
+                    <p>${result.error}</p>
+                  </div>
+                `;
+              }
+            }
+          })
+          .catch(error => {
+            const resultContainer = dialog.querySelector('.result-container');
+            if (resultContainer) {
+              resultContainer.style.display = 'block';
+              resultContainer.innerHTML = `
+                <div class="error-result">
+                  <h4>执行失败</h4>
+                  <p>${error.message}</p>
+                </div>
+              `;
+            }
+          })
+          .finally(() => {
+            executeBtn.disabled = false;
+            executeBtn.textContent = '执行';
+          });
+      } catch (error) {
+        console.error('工具调用参数处理失败:', error);
+        const resultContainer = dialog.querySelector('.result-container');
+        if (resultContainer) {
+          resultContainer.style.display = 'block';
+          resultContainer.innerHTML = `
+            <div class="error-result">
+              <h4>执行失败</h4>
+              <p>参数处理错误: ${error.message}</p>
+            </div>
+          `;
+        }
+      }
+    });
+  }
+}
+
+// 处理预设选择
+function handlePresetSelect() {
+  console.log('处理预设选择');
+
+  const presetMcpSelect = document.getElementById('preset-mcp-select');
+  if (!presetMcpSelect) {
+    console.error('处理预设选择失败: preset-mcp-select元素不存在');
+    return;
+  }
+
+  const serverNameInput = document.getElementById('server-name');
+  const serverCommandInput = document.getElementById('server-command');
+  const serverArgsInput = document.getElementById('server-args');
+  const serverEnvInput = document.getElementById('server-env');
+  const serverTypeSelect = document.getElementById('server-type');
+  const configJsonInput = document.getElementById('config-json');
+
+  if (
+    !serverNameInput ||
+    !serverCommandInput ||
+    !serverArgsInput ||
+    !serverEnvInput ||
+    !serverTypeSelect
+  ) {
+    console.error('处理预设选择失败: 某些必要的DOM元素不存在');
+    return;
+  }
+
+  const selectedPreset = presetMcpSelect.value;
+
+  // 检查是否有选择预设，并且预设存在
+  if (selectedPreset && typeof MCP_PRESETS === 'object' && MCP_PRESETS[selectedPreset]) {
+    const preset = MCP_PRESETS[selectedPreset];
+    console.log('已选择预设:', preset);
+
+    // 将预设转换为JSON配置格式
+    try {
+      const jsonConfig = {
+        mcpServers: {
+          [preset.name]: {
+            command: preset.command,
+            args: preset.args,
+            env: preset.env,
+          },
+        },
+      };
+
+      // 填充到JSON输入框并格式化
+      if (configJsonInput) {
+        configJsonInput.value = JSON.stringify(jsonConfig, null, 2);
+      }
+
+      // 填充表单
+      serverNameInput.value = preset.name;
+      serverCommandInput.value = preset.command;
+      serverArgsInput.value = Array.isArray(preset.args) ? preset.args.join('\n') : '';
+
+      // 格式化环境变量
+      const envText =
+        preset.env && typeof preset.env === 'object'
+          ? Object.entries(preset.env)
+              .map(([key, value]) => `${key}=${value}`)
+              .join('\n')
+          : '';
+
+      serverEnvInput.value = envText;
+
+      // 切换到stdio类型
+      serverTypeSelect.value = 'stdio';
+      try {
+        serverTypeSelect.dispatchEvent(new Event('change'));
+      } catch (e) {
+        console.error('无法触发serverTypeSelect变更事件:', e);
+      }
+
+      // 验证表单
+      validateForm();
+
+      // 重置选择器
+      presetMcpSelect.value = '';
+
+      if (toastManager && typeof toastManager.showToast === 'function') {
+        toastManager.showToast(`已加载预设: ${preset.name}`, 'info');
+      }
+    } catch (error) {
+      console.error('处理预设选择时出错:', error);
+      if (toastManager && typeof toastManager.showToast === 'function') {
+        toastManager.showToast(`加载预设失败: ${error.message}`, 'error');
+      }
+    }
+  }
+}
+
+// 处理配置文件导入
+function handleConfigImport() {
+  console.log('处理配置文件导入');
+
+  const configFileInput = document.getElementById('config-file');
+  if (!configFileInput) {
+    console.error('处理配置文件导入失败: config-file元素不存在');
+    return;
+  }
+
+  const file = configFileInput.files[0];
+
+  if (!file) {
+    if (toastManager && typeof toastManager.showToast === 'function') {
+      toastManager.showToast('请选择配置文件', 'error');
+    }
+    return;
+  }
+
+  const reader = new FileReader();
+
+  reader.onload = e => {
+    try {
+      const config = JSON.parse(e.target.result);
+
+      if (!config.mcpServers || typeof config.mcpServers !== 'object') {
+        throw new Error('无效的配置文件格式');
+      }
+
+      // 添加所有配置的MCP
+      const mcpPromises = [];
+
+      if (mcpManager && typeof mcpManager.addMcp === 'function') {
+        for (const [name, mcpConfig] of Object.entries(config.mcpServers)) {
+          const payload = {
+            sessionId,
+            name,
+            clientType: 'stdio',
+            command: mcpConfig.command,
+            args: mcpConfig.args,
+            env: mcpConfig.env,
+          };
+
+          mcpPromises.push(mcpManager.addMcp(payload));
+        }
+
+        Promise.all(mcpPromises)
+          .then(() => {
+            if (toastManager && typeof toastManager.showToast === 'function') {
+              toastManager.showToast('配置文件导入成功', 'success');
+            }
+            try {
+              switchTab('list-mcp');
+            } catch (e) {
+              console.error('切换到MCP列表标签页失败:', e);
+            }
+          })
+          .catch(error => {
+            console.error('导入MCP失败:', error);
+            if (toastManager && typeof toastManager.showToast === 'function') {
+              toastManager.showToast(`导入失败: ${error.message}`, 'error');
+            }
+          });
+      } else {
+        console.error('无法导入MCP: mcpManager.addMcp不可用');
+        if (toastManager && typeof toastManager.showToast === 'function') {
+          toastManager.showToast('无法导入MCP: 管理器不可用', 'error');
+        }
+      }
+    } catch (error) {
+      console.error('解析配置文件失败:', error);
+      if (toastManager && typeof toastManager.showToast === 'function') {
+        toastManager.showToast(`配置文件解析失败: ${error.message}`, 'error');
+      }
+    }
+  };
+
+  reader.readAsText(file);
+}
+
+// JSON配置处理函数
+function validateJSON() {
+  console.log('验证JSON配置');
+
+  const configJsonInput = document.getElementById('config-json');
+  if (!configJsonInput) {
+    console.error('验证JSON配置失败: config-json元素不存在');
+    return false;
+  }
+
+  const configJson = configJsonInput.value.trim();
+
+  if (!configJson) {
+    if (toastManager && typeof toastManager.showToast === 'function') {
+      toastManager.showToast('请输入配置信息', 'error');
+    }
+    return false;
+  }
+
+  try {
+    const config = JSON.parse(configJson);
+
+    if (!config.mcpServers || typeof config.mcpServers !== 'object') {
+      if (toastManager && typeof toastManager.showToast === 'function') {
+        toastManager.showToast('无效的配置格式，需要包含mcpServers对象', 'error');
+      }
+      return false;
+    }
+
+    if (toastManager && typeof toastManager.showToast === 'function') {
+      toastManager.showToast('JSON格式有效', 'success');
+    }
+    return true;
+  } catch (error) {
+    console.error('JSON验证失败:', error);
+    if (toastManager && typeof toastManager.showToast === 'function') {
+      toastManager.showToast(`JSON格式无效: ${error.message}`, 'error');
+    }
+    return false;
+  }
+}
+
+function formatJSON() {
+  console.log('格式化JSON配置');
+
+  const configJsonInput = document.getElementById('config-json');
+  if (!configJsonInput) {
+    console.error('格式化JSON配置失败: config-json元素不存在');
+    return;
+  }
+
+  const configJson = configJsonInput.value.trim();
+
+  if (!configJson) {
+    if (toastManager && typeof toastManager.showToast === 'function') {
+      toastManager.showToast('请输入配置信息', 'error');
+    }
+    return;
+  }
+
+  try {
+    const parsed = JSON.parse(configJson);
+    configJsonInput.value = JSON.stringify(parsed, null, 2);
+    if (toastManager && typeof toastManager.showToast === 'function') {
+      toastManager.showToast('已格式化JSON', 'success');
+    }
+  } catch (error) {
+    console.error('JSON格式化失败:', error);
+    if (toastManager && typeof toastManager.showToast === 'function') {
+      toastManager.showToast(`无法格式化: ${error.message}`, 'error');
+    }
+  }
+}
+
+function clearJSON() {
+  console.log('清除JSON配置');
+
+  const configJsonInput = document.getElementById('config-json');
+  if (configJsonInput) {
+    configJsonInput.value = '';
+  }
+}
+
+// 解析命令行
+function parseCommandLine() {
+  console.log('解析命令行');
+
+  const commandInput = document.getElementById('command-input');
+  if (!commandInput) {
+    console.error('解析命令行失败: command-input元素不存在');
+    return;
+  }
+
+  const serverNameInput = document.getElementById('server-name');
+  const serverCommandInput = document.getElementById('server-command');
+  const serverArgsInput = document.getElementById('server-args');
+
+  if (!serverNameInput || !serverCommandInput || !serverArgsInput) {
+    console.error('解析命令行失败: 必要的表单元素不存在');
+    return;
+  }
+
+  const commandLine = commandInput.value.trim();
+  if (!commandLine) {
+    if (toastManager && typeof toastManager.showToast === 'function') {
+      toastManager.showToast('请输入命令行', 'error');
+    }
+    return;
+  }
+
+  try {
+    // 简单的命令行解析
+    const parts = commandLine.split(/\s+/);
+    if (parts.length === 0) {
+      throw new Error('无效的命令行');
+    }
+
+    // 第一部分是命令
+    const command = parts[0];
+    // 其余部分是参数
+    const args = parts.slice(1);
+
+    // 填充表单
+    serverCommandInput.value = command;
+    serverArgsInput.value = args.join('\n');
+
+    // 生成名称（如果为空）
+    if (!serverNameInput.value) {
+      serverNameInput.value = `${command}-mcp`;
+    }
+
+    // 验证表单
+    validateForm();
+
+    // 清空命令输入
+    commandInput.value = '';
+
+    if (toastManager && typeof toastManager.showToast === 'function') {
+      toastManager.showToast('命令行已解析', 'success');
+    }
+  } catch (error) {
+    console.error('解析命令行失败:', error);
+    if (toastManager && typeof toastManager.showToast === 'function') {
+      toastManager.showToast(`解析命令行失败: ${error.message}`, 'error');
+    }
+  }
+}
+
+function handleConfigParse() {
+  console.log('解析并应用JSON配置');
+
+  const configJsonInput = document.getElementById('config-json');
+  if (!configJsonInput) {
+    console.error('解析JSON配置失败: config-json元素不存在');
+    return;
+  }
+
+  const configJson = configJsonInput.value.trim();
+
+  if (!configJson) {
+    if (toastManager && typeof toastManager.showToast === 'function') {
+      toastManager.showToast('请输入配置信息', 'error');
+    }
+    return;
+  }
+
+  try {
+    const config = JSON.parse(configJson);
+
+    if (!config.mcpServers || typeof config.mcpServers !== 'object') {
+      throw new Error('无效的配置格式，需要包含mcpServers对象');
+    }
+
+    // 添加所有配置的MCP
+    const mcpPromises = [];
+
+    if (mcpManager && typeof mcpManager.addMcp === 'function') {
+      for (const [name, mcpConfig] of Object.entries(config.mcpServers)) {
+        const payload = {
+          sessionId,
+          name,
+          clientType: 'stdio',
+          command: mcpConfig.command,
+          args: Array.isArray(mcpConfig.args) ? mcpConfig.args : [],
+          env: mcpConfig.env || {},
+        };
+
+        mcpPromises.push(mcpManager.addMcp(payload));
+      }
+
+      Promise.all(mcpPromises)
+        .then(() => {
+          if (toastManager && typeof toastManager.showToast === 'function') {
+            toastManager.showToast('配置已成功应用', 'success');
+          }
+          try {
+            switchTab('list-mcp');
+          } catch (e) {
+            console.error('切换到MCP列表标签页失败:', e);
+          }
+          // 清空输入框
+          configJsonInput.value = '';
+        })
+        .catch(error => {
+          console.error('应用配置失败:', error);
+          if (toastManager && typeof toastManager.showToast === 'function') {
+            toastManager.showToast(`应用配置失败: ${error.message}`, 'error');
+          }
+        });
+    } else {
+      console.error('无法应用配置: mcpManager.addMcp不可用');
+      if (toastManager && typeof toastManager.showToast === 'function') {
+        toastManager.showToast('无法应用配置: 管理器不可用', 'error');
+      }
+    }
+  } catch (error) {
+    console.error('JSON解析失败:', error);
+    if (toastManager && typeof toastManager.showToast === 'function') {
+      toastManager.showToast(`JSON解析失败: ${error.message}`, 'error');
+    }
+  }
 }

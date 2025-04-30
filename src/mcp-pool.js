@@ -23,13 +23,21 @@ function init({ createStdioMcp, createSseMcp }) {
     releaseMcpInstance,
     removeMcpInstance,
     getPoolStats,
+    getUserInstances,
   };
 }
 
+// 获取用户的所有MCP实例
+function getUserInstances(userId) {
+  if (!userId) return [];
+  return registry.findUserInstances(userId);
+}
+
 // 获取或创建MCP实例
-async function getOrCreateMcpInstance(sessionId, name, config, clientType) {
+async function getOrCreateMcpInstance(sessionId, name, config, clientType, userId = 'anonymous') {
   logger.info(`尝试获取或创建MCP实例`, {
     sessionId,
+    userId,
     mcpName: name,
     clientType,
   });
@@ -41,6 +49,7 @@ async function getOrCreateMcpInstance(sessionId, name, config, clientType) {
   if (existingInstance) {
     logger.info(`找到匹配的MCP实例，准备复用`, {
       sessionId,
+      userId,
       instanceId: existingInstance.instanceId,
       mcpName: name,
     });
@@ -67,7 +76,11 @@ async function getOrCreateMcpInstance(sessionId, name, config, clientType) {
   }
 
   // 没有找到可用实例，创建新的实例
-  logger.info(`没有找到匹配的MCP实例，创建新实例`, { sessionId, mcpName: name });
+  logger.info(`没有找到匹配的MCP实例，创建新实例`, {
+    sessionId,
+    userId,
+    mcpName: name,
+  });
 
   try {
     // 根据类型选择创建方法
@@ -100,7 +113,7 @@ async function getOrCreateMcpInstance(sessionId, name, config, clientType) {
       ...result.mcpSession,
     };
 
-    registry.registerInstance(instanceId, config, mcpSession);
+    registry.registerInstance(instanceId, config, mcpSession, userId);
     mcpRegistry.registered(name, instanceId, config);
 
     // 关联会话
@@ -108,6 +121,7 @@ async function getOrCreateMcpInstance(sessionId, name, config, clientType) {
 
     logger.info(`已创建并注册新的MCP实例`, {
       sessionId,
+      userId,
       instanceId,
       mcpName: name,
       clientType,
@@ -132,6 +146,7 @@ async function getOrCreateMcpInstance(sessionId, name, config, clientType) {
   } catch (error) {
     logger.error(`创建MCP实例失败`, {
       sessionId,
+      userId,
       mcpName: name,
       error: error.message,
       stack: error.stack,
@@ -146,66 +161,19 @@ async function getOrCreateMcpInstance(sessionId, name, config, clientType) {
 
 // 释放会话对MCP实例的使用
 function releaseMcpInstance(sessionId, instanceId) {
-  logger.info(`释放MCP实例`, { sessionId, instanceId });
+  logger.info(`释放会话对MCP实例的使用`, { sessionId, instanceId });
   return registry.dissociateSessionFromInstance(sessionId, instanceId);
 }
 
-// 移除并清理MCP实例
-async function removeMcpInstance(instanceId) {
-  const instance = registry.getInstanceDetail(instanceId);
-
-  if (!instance) {
-    logger.warn(`尝试移除不存在的MCP实例`, { instanceId });
-    return {
-      success: false,
-      error: '实例不存在',
-    };
-  }
-
-  try {
-    // 清理实例资源
-    if (instance.mcpSession.clientType === 'stdio' && instance.mcpSession.process) {
-      // 终止子进程
-      instance.mcpSession.process.kill();
-      logger.info(`已终止MCP进程`, { instanceId, clientType: 'stdio' });
-    } else if (instance.mcpSession.clientType === 'sse' && instance.mcpSession.heartbeatInterval) {
-      // 清除心跳检测
-      clearInterval(instance.mcpSession.heartbeatInterval);
-      logger.info(`已清除MCP心跳检测`, { instanceId, clientType: 'sse' });
-    }
-
-    // 从注册表中移除
-    registry.removeInstance(instanceId);
-    logger.info(`已从注册表中移除MCP实例`, { instanceId });
-
-    return {
-      success: true,
-    };
-  } catch (error) {
-    logger.error(`移除MCP实例失败`, { instanceId, error: error.message, stack: error.stack });
-    return {
-      success: false,
-      error: `移除实例失败: ${error.message}`,
-    };
-  }
+// 从池中移除MCP实例
+function removeMcpInstance(instanceId) {
+  logger.info(`从池中移除MCP实例`, { instanceId });
+  return registry.removeInstance(instanceId);
 }
 
 // 获取池统计信息
 function getPoolStats() {
-  const instances = registry.getAllInstances();
-
-  const stats = {
-    totalInstances: instances.length,
-    activeInstances: instances.filter(i => i.sessionCount > 0).length,
-    idleInstances: instances.filter(i => i.sessionCount === 0).length,
-    byType: {
-      stdio: instances.filter(i => i.type === 'stdio').length,
-      sse: instances.filter(i => i.type === 'sse').length,
-    },
-  };
-
-  logger.debug(`MCP池统计信息`, { stats });
-  return stats;
+  return registry.getStats();
 }
 
 module.exports = {

@@ -9,7 +9,6 @@ const path = require('path');
 const { spawn } = require('child_process');
 const http = require('http');
 const socketIo = require('socket.io');
-const tools = require('./tools');
 const openai = require('./openai');
 const axios = require('axios');
 const fs = require('fs');
@@ -57,6 +56,9 @@ app.use(express.static(path.join(__dirname, '../public')));
 // 存储所有会话
 const sessions = {};
 
+// 用户映射 - 存储用户拥有的会话
+const userSessions = {};
+
 // 存储聊天历史
 const chatHistories = {};
 
@@ -94,13 +96,51 @@ logger.info('反向代理路由已创建并集成');
 // 创建新会话
 function createSession(userId) {
   const sessionId = uuidv4();
+
+  // 使用真实的用户ID，如果没有则生成一个
+  const actualUserId = userId || `anonymous-${uuidv4()}`;
+
   sessions[sessionId] = {
     id: sessionId,
-    userId,
+    userId: actualUserId,
     mcpSessions: {},
     createdAt: new Date(),
   };
-  return sessionId;
+
+  // 将会话添加到用户的会话列表中
+  if (!userSessions[actualUserId]) {
+    userSessions[actualUserId] = new Set();
+  }
+  userSessions[actualUserId].add(sessionId);
+
+  // 新增：加载用户在其他会话中的MCP实例
+  if (actualUserId && !actualUserId.startsWith('anonymous-')) {
+    const userInstances = registry.findUserInstances(actualUserId);
+    userInstances.forEach(instance => {
+      // 将实例关联到新会话
+      if (instance.mcpSession) {
+        sessions[sessionId].mcpSessions[instance.mcpSession.name] = {
+          instanceId: instance.instanceId,
+          name: instance.mcpSession.name,
+          clientType: instance.mcpSession.clientType,
+          tools: instance.mcpSession.tools,
+          status: instance.mcpSession.status,
+          command: instance.mcpSession.command,
+          args: instance.mcpSession.args,
+          env: instance.mcpSession.env,
+          url: instance.mcpSession.url,
+          isExternal: instance.mcpSession.isExternal || true,
+        };
+        registry.associateSessionWithInstance(sessionId, instance.instanceId);
+      }
+    });
+
+    logger.info(
+      `已加载用户 ${actualUserId} 的 ${userInstances.length} 个MCP实例到新会话 ${sessionId}`,
+    );
+  }
+
+  return { sessionId, userId: actualUserId };
 }
 
 // 从MCP进程获取工具列表
@@ -337,73 +377,6 @@ async function callRemoteMcpTool(mcpSession, toolName, params) {
     };
 
     // 监听进程输出
-    // const dataHandler = data => {
-    //   if (responseReceived) return; // 如果已经收到响应，忽略后续输出
-
-    //   const chunk = data.toString();
-    //   buffer += chunk;
-    //   console.log(`收到工具 ${toolName} 输出:`, chunk);
-
-    //   try {
-    //     // 尝试逐行解析 - 可能有多行输出
-    //     const lines = buffer.split('\n').filter(line => line.trim());
-
-    //     for (let i = 0; i < lines.length; i++) {
-    //       const line = lines[i];
-    //       if (!line.startsWith('{')) continue;
-
-    //       try {
-    //         const response = JSON.parse(line);
-
-    //         // 先处理标准JSON-RPC 2.0请求
-    //         if (response.jsonrpc === '2.0' && response.id === requestId) {
-    //           cleanup(); // 清理事件监听和超时
-
-    //           if (response.error) {
-    //             console.error(`工具 ${toolName} 返回错误:`, response.error);
-    //             reject(new Error(response.error.message || '工具调用失败'));
-    //           } else if (response.result !== undefined) {
-    //             console.log(`工具 ${toolName} 调用成功:`, response.result);
-    //             resolve(response.result);
-    //           } else {
-    //             reject(new Error('无效的工具调用响应'));
-    //           }
-    //           return;
-    //         }
-
-    //         // 即使ID不匹配，只要响应格式正确，也尝试处理（兼容模式）
-    //         // 这是针对market-trending和stock-quote等工具的特殊处理
-    //         if (response.jsonrpc === '2.0' && response.result) {
-    //           console.log(
-    //             `收到带有结果的JSON-RPC响应，请求ID不匹配 (实际: ${response.id}, 预期: ${requestId})，但继续处理`,
-    //           );
-
-    //           // 特别处理特定工具类型
-    //           if (
-    //             (toolName === 'market-trending' || toolName === 'stock-quote') &&
-    //             typeof response.result === 'object'
-    //           ) {
-    //             console.log(`检测到${toolName}工具返回，使用兼容模式处理结果`);
-    //             cleanup();
-    //             resolve(response.result);
-    //             return;
-    //           }
-    //         }
-    //       } catch (lineError) {
-    //         // 这行不是有效的JSON或不匹配当前请求，继续
-    //         console.log(`解析输出行失败: ${line}, 错误: ${lineError.message}`);
-    //       }
-    //     }
-
-    //     // 使用最后一行或空字符串更新缓冲区
-    //     buffer =
-    //       lines.length > 0 && !lines[lines.length - 1].endsWith('}') ? lines[lines.length - 1] : '';
-    //   } catch (e) {
-    //     console.log(`解析输出失败，继续等待: ${e.message}`);
-    //   }
-    // };
-
-    // 监听进程输出
     const dataHandler = data => {
       if (responseReceived) return; // 如果已经收到响应，忽略后续输出
 
@@ -551,11 +524,6 @@ async function callRemoteMcpTool(mcpSession, toolName, params) {
       reject(new Error(`发送请求失败: ${writeError.message}`));
     }
   });
-}
-
-// 自动检测和添加本地工具
-function getLocalTools() {
-  return tools.getToolDefinitions();
 }
 
 // 从stdio创建MCP实例的工厂函数
@@ -1393,8 +1361,12 @@ function disconnectMcp(sessionId, name) {
 // API端点
 app.post('/api/session', (req, res) => {
   const { userId } = req.body;
-  const sessionId = createSession(userId || 'anonymous');
-  res.json({ success: true, sessionId });
+  const result = createSession(userId);
+  res.json({
+    success: true,
+    sessionId: result.sessionId,
+    userId: result.userId,
+  });
 });
 
 // 更新后的MCP API端点
@@ -1630,7 +1602,6 @@ async function mcpToolAdapter(sessionId, mcpName, toolName, params) {
       }
     } else {
       // 调用本地工具
-      result = await tools.executeToolCall(toolName, safeParams);
     }
 
     const responseTime = Date.now() - startTime;
@@ -1646,16 +1617,12 @@ async function mcpToolAdapter(sessionId, mcpName, toolName, params) {
 app.post('/api/mcp/call', async (req, res) => {
   const { sessionId, mcpName, tool, params } = req.body;
 
-  console.log(`收到工具调用请求:`, {
+  logger.info(`收到工具调用请求:`, {
     sessionId,
     mcpName,
     tool,
     params: params ? '参数存在' : '无参数',
   });
-
-  if (params) {
-    console.log(`工具调用参数详情:`, JSON.stringify(params, null, 2));
-  }
 
   if (!sessionId || !mcpName || !tool) {
     const missingParams = [];
@@ -1663,7 +1630,7 @@ app.post('/api/mcp/call', async (req, res) => {
     if (!mcpName) missingParams.push('mcpName');
     if (!tool) missingParams.push('tool');
 
-    console.error(`工具调用 - 缺少必要参数: ${missingParams.join(', ')}`);
+    logger.error(`工具调用 - 缺少必要参数: ${missingParams.join(', ')}`);
     return res.status(400).json({
       success: false,
       error: `缺少必要参数: ${missingParams.join(', ')}`,
@@ -1675,17 +1642,18 @@ app.post('/api/mcp/call', async (req, res) => {
   if (!sessions[sessionId]) {
     logger.info(`聊天API - 会话不存在，自动创建新会话`, { sessionId });
     // 创建新会话并使用它
-    const newSessionId = createSession('anonymous');
+    const newSession = createSession('anonymous');
+    actualSessionId = newSession.sessionId;
 
     // 初始化聊天历史
-    initChatHistory(newSessionId);
+    initChatHistory(actualSessionId);
 
     // 返回新创建的会话ID信息
-    logger.info(`已创建新会话，返回新会话ID`, { newSessionId });
+    logger.info(`已创建新会话，返回新会话ID`, { newSessionId: actualSessionId });
 
     return res.json({
       success: true,
-      newSessionId,
+      newSessionId: actualSessionId,
       message: {
         id: Date.now().toString(),
         role: 'system',
@@ -1695,25 +1663,93 @@ app.post('/api/mcp/call', async (req, res) => {
     });
   }
 
+  // 获取用户ID
+  const userId = sessions[actualSessionId].userId;
+
   // 检查MCP是否在此会话中
   if (!sessions[actualSessionId].mcpSessions || !sessions[actualSessionId].mcpSessions[mcpName]) {
-    console.log(`在会话 ${actualSessionId} 中找不到MCP ${mcpName}，尝试查找其他会话`);
+    logger.info(`在会话 ${actualSessionId} 中找不到MCP ${mcpName}，尝试查找用户的其他会话`);
 
-    // 尝试在其他会话中查找相同名称的MCP
+    // 尝试在用户的其他会话中查找相同名称的MCP
     let foundMcp = false;
     let foundSessionId = null;
+    let foundInstance = null;
 
-    Object.keys(sessions).forEach(sid => {
-      if (sessions[sid].mcpSessions && sessions[sid].mcpSessions[mcpName]) {
-        foundMcp = true;
-        foundSessionId = sid;
+    // 如果是已认证用户（非匿名用户），先尝试使用registry查找用户实例
+    if (userId && !userId.startsWith('anonymous-')) {
+      const userInstances = registry.findUserInstances(userId);
+
+      for (const instance of userInstances) {
+        if (instance.mcpSession && instance.mcpSession.name === mcpName) {
+          foundMcp = true;
+          foundInstance = instance;
+          logger.info(`在用户 ${userId} 的实例库中找到MCP ${mcpName}`);
+          break;
+        }
       }
-    });
 
-    if (foundMcp) {
-      console.log(`在会话 ${foundSessionId} 中找到了名为 ${mcpName} 的MCP，使用此会话`);
-      actualSessionId = foundSessionId;
-    } else {
+      // 如果找到了实例，将它关联到当前会话
+      if (foundMcp && foundInstance) {
+        // 将实例关联到当前会话
+        sessions[actualSessionId].mcpSessions = sessions[actualSessionId].mcpSessions || {};
+        sessions[actualSessionId].mcpSessions[mcpName] = {
+          instanceId: foundInstance.instanceId,
+          name: mcpName,
+          clientType: foundInstance.mcpSession.clientType,
+          tools: foundInstance.mcpSession.tools,
+          status: foundInstance.mcpSession.status,
+          command: foundInstance.mcpSession.command,
+          args: foundInstance.mcpSession.args,
+          env: foundInstance.mcpSession.env,
+          url: foundInstance.mcpSession.url,
+          isExternal: foundInstance.mcpSession.isExternal || true,
+        };
+
+        // 关联会话与实例
+        registry.associateSessionWithInstance(actualSessionId, foundInstance.instanceId);
+        logger.info(`已将MCP ${mcpName} 关联到会话 ${actualSessionId}`);
+      }
+    }
+
+    // 如果没有找到，或者是匿名用户，尝试在所有会话中查找（向后兼容）
+    if (!foundMcp) {
+      Object.keys(sessions).forEach(sid => {
+        if (
+          sid !== actualSessionId &&
+          sessions[sid].mcpSessions &&
+          sessions[sid].mcpSessions[mcpName]
+        ) {
+          // 对于已认证用户，只从同一用户的会话中查找
+          if (userId && !userId.startsWith('anonymous-')) {
+            if (sessions[sid].userId === userId) {
+              foundMcp = true;
+              foundSessionId = sid;
+            }
+          } else {
+            // 匿名用户可以从任何会话查找（保持现有行为）
+            foundMcp = true;
+            foundSessionId = sid;
+          }
+        }
+      });
+
+      if (foundMcp && foundSessionId) {
+        logger.info(`在会话 ${foundSessionId} 中找到了名为 ${mcpName} 的MCP，使用此会话`);
+
+        // 将MCP从其他会话复制到当前会话
+        const mcpInfo = sessions[foundSessionId].mcpSessions[mcpName];
+        sessions[actualSessionId].mcpSessions = sessions[actualSessionId].mcpSessions || {};
+        sessions[actualSessionId].mcpSessions[mcpName] = { ...mcpInfo };
+
+        // 如果有instanceId，关联会话与实例
+        if (mcpInfo.instanceId) {
+          registry.associateSessionWithInstance(actualSessionId, mcpInfo.instanceId);
+          logger.info(`已将MCP实例 ${mcpInfo.instanceId} 关联到会话 ${actualSessionId}`);
+        }
+      }
+    }
+
+    if (!foundMcp) {
       return res.status(400).json({
         success: false,
         error: `找不到名为 ${mcpName} 的MCP会话`,
@@ -1728,7 +1764,7 @@ app.post('/api/mcp/call', async (req, res) => {
     // 调用工具
     const result = await mcpToolAdapter(actualSessionId, mcpName, tool, safeParams);
 
-    console.log(`工具调用成功: ${tool}，结果:`, result);
+    logger.info(`工具调用成功: ${tool}，结果:`, result);
 
     // 如果使用的是重定向的会话ID，在返回结果中包含
     const response = {
@@ -1742,7 +1778,7 @@ app.post('/api/mcp/call', async (req, res) => {
 
     res.json(response);
   } catch (error) {
-    console.error(`工具调用失败: ${error.message}`);
+    logger.error(`工具调用失败: ${error.message}`);
     res.status(500).json({
       success: false,
       error: `工具调用失败: ${error.message}`,
@@ -2017,15 +2053,49 @@ app.get('/api/mcp', (req, res) => {
     });
   }
 
-  const mcpList = Object.values(sessions[sessionId].mcpSessions).map(mcp => ({
-    name: mcp.name,
-    clientType: mcp.clientType,
-    tools: mcp.tools,
-    status: mcp.status,
-    command: mcp.command,
-    url: mcp.url,
-    isExternal: mcp.isExternal,
-  }));
+  // 获取用户ID
+  const userId = sessions[sessionId].userId;
+  const mcpList = [];
+
+  // 添加当前会话的MCP
+  Object.values(sessions[sessionId].mcpSessions || {}).forEach(mcp => {
+    mcpList.push({
+      name: mcp.name,
+      clientType: mcp.clientType,
+      tools: mcp.tools,
+      status: mcp.status,
+      command: mcp.command,
+      url: mcp.url,
+      isExternal: mcp.isExternal,
+      fromCurrentSession: true,
+    });
+  });
+
+  // 添加用户在其他会话中的MCP（如果当前会话中没有）
+  if (userId && !userId.startsWith('anonymous-')) {
+    const userInstances = registry.findUserInstances(userId);
+
+    userInstances.forEach(instance => {
+      // 检查该实例是否已经在当前会话的列表中
+      const instanceName = instance.mcpSession?.name;
+      const alreadyInList = mcpList.some(mcp => mcp.name === instanceName);
+
+      if (instanceName && !alreadyInList) {
+        mcpList.push({
+          name: instanceName,
+          clientType: instance.mcpSession.clientType,
+          tools: instance.mcpSession.tools,
+          status: instance.mcpSession.status,
+          command: instance.mcpSession.command,
+          url: instance.mcpSession.url,
+          isExternal: instance.mcpSession.isExternal || true,
+          fromOtherSession: true, // 标记来自其他会话
+        });
+      }
+    });
+
+    logger.info(`为用户 ${userId} 返回 ${mcpList.length} 个MCP实例（包括跨会话实例）`);
+  }
 
   res.json({ success: true, mcps: mcpList });
 });

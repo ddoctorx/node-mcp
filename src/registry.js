@@ -7,6 +7,9 @@ const crypto = require('crypto');
 // 存储所有活跃的MCP服务实例
 const mcpInstances = {};
 
+// 用户到MCP实例的映射
+const userMcpInstances = {};
+
 // 根据配置生成唯一的实例签名
 function generateInstanceSignature(config) {
   if (typeof config === 'string') {
@@ -26,7 +29,7 @@ function generateInstanceSignature(config) {
 }
 
 // 注册一个新的MCP服务实例
-function registerInstance(instanceId, config, mcpSession) {
+function registerInstance(instanceId, config, mcpSession, userId = 'anonymous') {
   const signature = generateInstanceSignature(config);
 
   if (!mcpInstances[signature]) {
@@ -35,34 +38,52 @@ function registerInstance(instanceId, config, mcpSession) {
       config,
       instanceId,
       mcpSession,
+      userId, // 添加用户ID
       sessions: new Set(),
       lastUsedTime: Date.now(),
       createdTime: Date.now(),
       usageCount: 0,
     };
+
+    // 将实例关联到用户
+    if (!userMcpInstances[userId]) {
+      userMcpInstances[userId] = new Set();
+    }
+    userMcpInstances[userId].add(signature);
   }
 
   return mcpInstances[signature];
 }
 
-// 查找是否存在匹配的MCP服务实例
+// 查找匹配的MCP服务实例
 function findMatchingInstance(config) {
-  try {
-    const signature = generateInstanceSignature(config);
-    return mcpInstances[signature] || null;
-  } catch (error) {
-    console.error('生成实例签名失败:', error);
-    return null;
-  }
+  const signature = generateInstanceSignature(config);
+  return mcpInstances[signature];
 }
 
-// 将会话关联到MCP实例
+// 查找用户的所有MCP服务实例
+function findUserInstances(userId) {
+  if (!userId || !userMcpInstances[userId]) {
+    return [];
+  }
+
+  return Array.from(userMcpInstances[userId])
+    .map(signature => mcpInstances[signature])
+    .filter(Boolean); // 过滤掉可能已不存在的实例
+}
+
+// 获取实例详情
+function getInstanceDetail(instanceId) {
+  return Object.values(mcpInstances).find(instance => instance.instanceId === instanceId);
+}
+
+// 关联会话与MCP实例
 function associateSessionWithInstance(sessionId, instanceId) {
   Object.values(mcpInstances).forEach(instance => {
     if (instance.instanceId === instanceId) {
       instance.sessions.add(sessionId);
       instance.lastUsedTime = Date.now();
-      instance.usageCount++;
+      instance.usageCount += 1;
       return true;
     }
   });
@@ -93,12 +114,23 @@ function getIdleInstances(idleTimeThreshold = 60 * 5 * 1000) {
 
 // 移除指定的MCP服务实例
 function removeInstance(instanceId) {
-  Object.keys(mcpInstances).forEach(signature => {
-    if (mcpInstances[signature].instanceId === instanceId) {
-      delete mcpInstances[signature];
-      return true;
+  const instance = Object.values(mcpInstances).find(inst => inst.instanceId === instanceId);
+
+  if (instance) {
+    // 从用户映射中移除
+    if (instance.userId && userMcpInstances[instance.userId]) {
+      userMcpInstances[instance.userId].delete(instance.signature);
+
+      // 如果用户没有任何实例了，清理用户映射
+      if (userMcpInstances[instance.userId].size === 0) {
+        delete userMcpInstances[instance.userId];
+      }
     }
-  });
+
+    // 从实例map中移除
+    delete mcpInstances[instance.signature];
+    return true;
+  }
 
   return false;
 }
@@ -110,32 +142,34 @@ function getAllInstances() {
     signature: instance.signature,
     type: instance.mcpSession.clientType,
     name: instance.mcpSession.name,
+    userId: instance.userId, // 添加用户ID到返回数据
     sessionCount: instance.sessions.size,
     lastUsedTime: instance.lastUsedTime,
     createdTime: instance.createdTime,
     usageCount: instance.usageCount,
-    status: instance.mcpSession.status,
   }));
 }
 
-// 获取实例的详细信息
-function getInstanceDetail(instanceId) {
-  const instance = Object.values(mcpInstances).find(inst => inst.instanceId === instanceId);
-  if (!instance) return null;
-
+// 获取统计信息
+function getStats() {
+  const instances = Object.values(mcpInstances);
   return {
-    ...instance,
-    sessions: Array.from(instance.sessions),
+    totalInstances: instances.length,
+    activeInstances: instances.filter(instance => instance.sessions.size > 0).length,
+    idleInstances: instances.filter(instance => instance.sessions.size === 0).length,
+    totalUsers: Object.keys(userMcpInstances).length,
   };
 }
 
 module.exports = {
   registerInstance,
   findMatchingInstance,
+  findUserInstances,
+  getInstanceDetail,
   associateSessionWithInstance,
   dissociateSessionFromInstance,
   getIdleInstances,
   removeInstance,
   getAllInstances,
-  getInstanceDetail,
+  getStats,
 };
