@@ -18,15 +18,24 @@ export interface FunctionCall {
 
 export async function getChatHistory(sessionId: string): Promise<Message[]> {
   try {
-    const response = await axios.get(`${API_BASE_URL}/chat/history?sessionId=${sessionId}`);
+    const response = await axios.get(`${API_BASE_URL}/chat`, {
+      params: { sessionId },
+    });
 
     if (!response.data.success) {
-      throw new Error(response.data.error || '获取聊天历史失败');
+      console.warn('获取聊天历史返回失败状态:', response.data.error);
+      return [];
     }
 
     return response.data.messages || [];
   } catch (error) {
     console.error('获取聊天历史失败:', error);
+
+    if (axios.isAxiosError(error) && error.response?.status === 404) {
+      console.warn('聊天历史不存在，可能是首次使用聊天功能');
+      return [];
+    }
+
     if (axios.isAxiosError(error)) {
       throw new Error(`获取聊天历史失败: ${error.response?.status} ${error.response?.statusText}`);
     }
@@ -36,7 +45,7 @@ export async function getChatHistory(sessionId: string): Promise<Message[]> {
 
 export async function sendMessage(sessionId: string, message: string): Promise<Message> {
   try {
-    const response = await axios.post(`${API_BASE_URL}/chat/message`, {
+    const response = await axios.post(`${API_BASE_URL}/chat`, {
       sessionId,
       message,
     });
@@ -57,7 +66,9 @@ export async function sendMessage(sessionId: string, message: string): Promise<M
 
 export async function clearChat(sessionId: string): Promise<void> {
   try {
-    const response = await axios.delete(`${API_BASE_URL}/chat/history?sessionId=${sessionId}`);
+    const response = await axios.delete(`${API_BASE_URL}/chat`, {
+      params: { sessionId },
+    });
 
     if (!response.data.success) {
       throw new Error(response.data.error || '清除聊天记录失败');

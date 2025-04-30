@@ -186,6 +186,7 @@ export default function AddMcpTab() {
       const formattedArgs = formatArgs(values.args || '');
       const formattedEnv = formatEnv(values.env || '');
 
+      // 确保包含完整的数据结构
       const mcpData = {
         name: values.name,
         type: values.type,
@@ -194,6 +195,8 @@ export default function AddMcpTab() {
         env: values.type === 'stdio' ? formattedEnv : undefined,
         url: values.type === 'sse' ? values.url : undefined,
       };
+
+      console.log('发送MCP添加请求:', JSON.stringify(mcpData, null, 2));
 
       // 调用API添加MCP
       const newMcp = await addMcp(sessionId, mcpData);
@@ -205,9 +208,9 @@ export default function AddMcpTab() {
       form.reset();
 
       toast.success(`MCP服务 ${values.name} 已添加`);
-    } catch (error) {
-      console.error('添加MCP失败:', error);
-      toast.error(`添加MCP失败: ${error instanceof Error ? error.message : '未知错误'}`);
+    } catch (_error) {
+      console.error('添加MCP失败:', _error);
+      toast.error(`添加MCP失败: ${_error instanceof Error ? _error.message : '未知错误'}`);
     } finally {
       setIsLoading(false);
     }

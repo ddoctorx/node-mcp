@@ -3,14 +3,15 @@ import { create } from 'zustand';
 export interface McpService {
   id: string;
   name: string;
-  type: 'stdio' | 'sse';
-  status: 'connected' | 'disconnected' | 'error';
+  type: string;
+  status: string;
   command?: string;
   args?: string[];
   env?: Record<string, string>;
   url?: string;
   tools?: McpTool[];
   error?: string;
+  instanceId?: string;
 }
 
 export interface McpTool {

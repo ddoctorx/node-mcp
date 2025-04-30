@@ -50,7 +50,8 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(bodyParser.json());
-app.use(express.static(path.join(__dirname, '../public')));
+// 修改静态文件路径指向out目录
+app.use(express.static(path.join(__dirname, '../frontend/out')));
 
 // 存储所有会话
 const sessions = {};
@@ -2301,4 +2302,13 @@ server.listen(PORT, () => {
     platform: process.platform,
     environment: process.env.NODE_ENV || 'development',
   });
+});
+
+// 确保这个通配符路由在所有API路由之后
+app.get('*', (req, res) => {
+  // 跳过API路由(这里是安全检查，通常不会执行到这里)
+  if (req.path.startsWith('/api/')) {
+    return res.status(404).json({ error: 'API路由不存在' });
+  }
+  res.sendFile(path.join(__dirname, '../frontend/out/index.html'));
 });

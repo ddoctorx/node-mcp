@@ -10,6 +10,7 @@ import { Message, FunctionCall, getChatHistory, sendMessage, clearChat } from '@
 import useSessionStore from '@/lib/stores/session-store';
 import useMcpStore from '@/lib/stores/mcp-store';
 import { getSocket, useSocket } from '@/lib/socket';
+import axios from 'axios';
 
 export default function ChatTab() {
   const { sessionId } = useSessionStore();
@@ -78,16 +79,18 @@ export default function ChatTab() {
       return false;
     }
 
+    // 检查是否有OpenAI MCP，但即使没有也允许聊天
     const hasOpenAi = mcpList.some(
       mcp => mcp.name.toLowerCase().includes('openai') && mcp.status === 'connected',
     );
 
-    if (!hasOpenAi) {
-      setChatStatus('未找到可用的OpenAI MCP服务');
-      return false;
+    if (hasOpenAi) {
+      setChatStatus('已连接到OpenAI MCP');
+      return true;
     }
 
-    setChatStatus('已连接');
+    // 使用内置的OpenAI服务
+    setChatStatus('使用内置OpenAI服务');
     return true;
   };
 
@@ -100,14 +103,25 @@ export default function ChatTab() {
       setMessages(history);
     } catch (error) {
       console.error('加载聊天历史失败:', error);
-      toast.error(`加载聊天历史失败: ${error instanceof Error ? error.message : '未知错误'}`);
+      // 仅在非404错误时显示错误消息
+      if (!(axios.isAxiosError(error) && error.response?.status === 404)) {
+        toast.error(`加载聊天历史失败: ${error instanceof Error ? error.message : '未知错误'}`);
+      }
+      // 确保即使出错也设置为空消息列表
+      setMessages([]);
     } finally {
       setIsLoading(false);
     }
   };
 
   const handleSendMessage = async () => {
-    if (!inputMessage.trim() || !sessionId || !checkChatAvailability()) return;
+    if (!inputMessage.trim() || !sessionId) return;
+
+    // 检查WebSocket是否连接
+    if (!isConnected) {
+      toast.error('WebSocket未连接，无法发送消息');
+      return;
+    }
 
     try {
       setIsLoading(true);
@@ -165,7 +179,11 @@ export default function ChatTab() {
     }
   };
 
-  const isDisabled = chatStatus !== '已连接' || isLoading;
+  const isDisabled =
+    (chatStatus !== '已连接' &&
+      chatStatus !== '已连接到OpenAI MCP' &&
+      chatStatus !== '使用内置OpenAI服务') ||
+    isLoading;
 
   return (
     <div className="space-y-4">
@@ -175,7 +193,11 @@ export default function ChatTab() {
           <span className="text-muted-foreground">状态:</span>
           <span
             className={`font-medium ${
-              chatStatus === '已连接' ? 'text-success' : 'text-destructive'
+              chatStatus === '已连接' ||
+              chatStatus === '已连接到OpenAI MCP' ||
+              chatStatus === '使用内置OpenAI服务'
+                ? 'text-success'
+                : 'text-destructive'
             }`}
           >
             {chatStatus}
@@ -235,13 +257,15 @@ export default function ChatTab() {
                           </pre>
                         </div>
 
-                        {call.result && (
+                        {call.result !== undefined && call.result !== null && (
                           <div>
                             <div className="text-xs font-medium text-muted-foreground mb-1">
                               结果:
                             </div>
-                            <pre className="text-xs bg-muted p-2 rounded overflow-x-auto">
-                              {JSON.stringify(call.result, null, 2)}
+                            <pre className="p-2 bg-muted rounded-md text-xs overflow-auto max-h-[200px]">
+                              {typeof call.result === 'object'
+                                ? JSON.stringify(call.result, null, 2)
+                                : String(call.result)}
                             </pre>
                           </div>
                         )}

@@ -44,6 +44,8 @@ export default function McpListTab() {
     } catch (error) {
       console.error('加载MCP列表失败:', error);
       toast.error(`加载MCP列表失败: ${error instanceof Error ? error.message : '未知错误'}`);
+      // 确保在API错误时设置一个空数组，避免使用旧数据
+      setMcpList([]);
     } finally {
       setIsLoading(false);
     }
@@ -144,6 +146,27 @@ export default function McpListTab() {
       setToolResult(`执行失败: ${error instanceof Error ? error.message : '未知错误'}`);
     }
   };
+
+  // 无会话ID处理
+  if (!sessionId) {
+    return (
+      <div className="flex flex-col items-center justify-center p-8 text-center">
+        <h2 className="text-2xl font-bold mb-4">已连接的MCP服务</h2>
+        <p className="text-muted-foreground mb-4">未找到有效会话</p>
+        <Button onClick={() => window.location.reload()}>刷新页面</Button>
+      </div>
+    );
+  }
+
+  // 加载中显示
+  if (isLoading && mcpList.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center p-8 text-center">
+        <h2 className="text-2xl font-bold mb-4">已连接的MCP服务</h2>
+        <p className="text-muted-foreground mb-4">正在加载MCP服务列表...</p>
+      </div>
+    );
+  }
 
   // 空状态显示
   if (mcpList.length === 0) {
