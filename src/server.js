@@ -51,7 +51,8 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(bodyParser.json());
 // 修改静态文件路径指向out目录
-app.use(express.static(path.join(__dirname, '../frontend/out')));
+// app.use(express.static(path.join(__dirname, '../frontend/out')));
+app.use(express.static(path.join(__dirname, '../public')));
 
 // 存储所有会话
 const sessions = {};
