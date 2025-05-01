@@ -115,8 +115,12 @@ function createSession(userId) {
 
   // 新增：加载用户在其他会话中的MCP实例
   if (actualUserId && !actualUserId.startsWith('anonymous-')) {
+    logger.info(`开始为用户[${actualUserId}]加载实例到会话[${sessionId}]`);
+
     const userInstances = registry.findUserInstances(actualUserId);
     userInstances.forEach(instance => {
+      logger.debug(`准备加载实例[${instance.instanceId}]到会话[${sessionId}]`);
+
       // 将实例关联到新会话
       if (instance.mcpSession) {
         sessions[sessionId].mcpSessions[instance.mcpSession.name] = {
@@ -1413,9 +1417,14 @@ app.post('/api/mcp', async (req, res) => {
   let actualSessionId = sessionId;
   if (!sessions[sessionId]) {
     console.log(`会话 ${sessionId} 不存在，自动创建新会话`);
-    actualSessionId = createSession('anonymous');
+    const sessionResult = createSession('anonymous');
+    actualSessionId = sessionResult.sessionId;
     console.log(`已创建新会话: ${actualSessionId}`);
   }
+
+  // 获取会话的用户ID
+  const userId = sessions[actualSessionId].userId;
+  logger.info(`为会话[${actualSessionId}]添加MCP，用户ID: [${userId}]`);
 
   let config;
   try {
@@ -1477,6 +1486,7 @@ app.post('/api/mcp', async (req, res) => {
       name,
       config,
       clientType,
+      userId,
     );
 
     if (!poolResult.success) {
@@ -1999,43 +2009,108 @@ app.delete('/api/chat/history/:sessionId', (req, res) => {
 });
 
 app.delete('/api/mcp', (req, res) => {
-  const { sessionId, name } = req.body;
+  // 从req.query中获取参数，因为DELETE请求通常不支持正确解析请求体
+  const { sessionId, name } = req.query;
 
-  if (!sessionId || !name) {
+  // 如果无法从query中获取，尝试从body中获取（兼容现有代码）
+  const sessId = sessionId || (req.body && req.body.sessionId);
+  const mcpName = name || (req.body && req.body.name);
+
+  logger.info(`接收到DELETE MCP请求`, {
+    sessionId: sessId,
+    mcpName,
+    query: req.query,
+  });
+
+  if (!sessId || !mcpName) {
+    logger.warn(`DELETE MCP请求缺少参数`, {
+      sessionId: sessId,
+      mcpName,
+      query: req.query,
+    });
     return res.status(400).json({
       success: false,
-      error: '缺少必要参数',
+      error: '缺少必要参数: sessionId或name',
     });
   }
 
   try {
     // 检查会话是否存在
-    if (
-      !sessions[sessionId] ||
-      !sessions[sessionId].mcpSessions ||
-      !sessions[sessionId].mcpSessions[name]
-    ) {
+    const sessionExists = !!sessions[sessId];
+    const mcpSessionsExists = sessionExists && !!sessions[sessId].mcpSessions;
+    const mcpExists = mcpSessionsExists && !!sessions[sessId].mcpSessions[mcpName];
+
+    logger.info(`DELETE MCP请求检查存在状态`, {
+      sessionId: sessId,
+      mcpName,
+      sessionExists,
+      mcpSessionsExists,
+      mcpExists,
+    });
+
+    if (!sessionExists || !mcpSessionsExists || !mcpExists) {
+      logger.warn(`DELETE MCP请求 - MCP会话不存在`, {
+        sessionId: sessId,
+        mcpName,
+        sessionExists,
+        mcpSessionsExists,
+        mcpExists,
+      });
       return res.status(400).json({
         success: false,
         error: 'MCP会话不存在',
       });
     }
 
-    const mcpInfo = sessions[sessionId].mcpSessions[name];
+    const mcpInfo = sessions[sessId].mcpSessions[mcpName];
     const instanceId = mcpInfo.instanceId;
 
+    logger.info(`准备删除MCP`, {
+      sessionId: sessId,
+      mcpName,
+      instanceId,
+    });
+
+    // 如果有实例ID，先更新实例状态为断开连接
+    if (instanceId) {
+      const instance = registry.getInstanceDetail(instanceId);
+      if (instance && instance.mcpSession) {
+        instance.mcpSession.status = 'disconnected';
+        logger.info(`已更新MCP实例状态为disconnected`, {
+          sessionId: sessId,
+          instanceId,
+          mcpName,
+        });
+      }
+    }
+
     // 从会话中移除MCP引用
-    delete sessions[sessionId].mcpSessions[name];
+    delete sessions[sessId].mcpSessions[mcpName];
 
     // 释放实例（但不销毁，实例会在空闲一段时间后被自动回收）
-    mcpPool.releaseMcpInstance(sessionId, instanceId);
+    if (instanceId) {
+      logger.info(`释放MCP实例`, {
+        sessionId: sessId,
+        instanceId,
+      });
+      mcpPool.releaseMcpInstance(sessId, instanceId);
+    }
 
     // 通知所有连接的客户端
-    io.to(sessionId).emit('mcp_disconnected', { name });
+    logger.info(`通知客户端MCP已断开连接`, {
+      sessionId: sessId,
+      mcpName,
+    });
+    io.to(sessId).emit('mcp_disconnected', { name: mcpName });
 
     res.json({ success: true });
   } catch (error) {
-    console.error('断开MCP连接错误:', error);
+    logger.error(`断开MCP连接错误`, {
+      sessionId: sessId,
+      mcpName,
+      error: error.message,
+      stack: error.stack,
+    });
     return res.status(500).json({
       success: false,
       error: `无法断开MCP连接: ${error.message}`,
@@ -2080,7 +2155,11 @@ app.get('/api/mcp', (req, res) => {
       const instanceName = instance.mcpSession?.name;
       const alreadyInList = mcpList.some(mcp => mcp.name === instanceName);
 
-      if (instanceName && !alreadyInList) {
+      // 检查MCP实例状态是否为已断开连接
+      const isDisconnected = instance.mcpSession?.status === 'disconnected';
+
+      // 只添加没有断开连接的MCP实例
+      if (instanceName && !alreadyInList && !isDisconnected) {
         mcpList.push({
           name: instanceName,
           clientType: instance.mcpSession.clientType,
@@ -2289,6 +2368,91 @@ app.get('/api/mcp/instances', (req, res) => {
     res.status(500).json({
       success: false,
       error: `获取MCP实例列表失败: ${error.message}`,
+    });
+  }
+});
+
+// 连接到已有的MCP实例
+app.post('/api/mcp/connect-instance', async (req, res) => {
+  try {
+    const { sessionId, instanceId } = req.body;
+    logger.info(`接收到连接实例请求`, { sessionId, instanceId });
+
+    if (!sessionId || !instanceId) {
+      logger.error(`连接实例请求缺少必要参数`, { sessionId, instanceId });
+      return res.status(400).json({
+        success: false,
+        error: '缺少必要参数: sessionId或instanceId',
+      });
+    }
+
+    // 获取实例详情
+    const instance = registry.getInstanceDetail(instanceId);
+    logger.info(`查询实例详情`, { instanceId, found: !!instance });
+
+    if (!instance) {
+      logger.error(`找不到指定ID的实例`, { instanceId });
+      return res.status(404).json({
+        success: false,
+        error: `找不到指定ID的实例: ${instanceId}`,
+      });
+    }
+
+    // 检查实例的详细信息
+    logger.info(`实例详情`, {
+      instanceId,
+      userId: instance.userId,
+      status: instance.mcpSession?.status,
+      sessions: Array.from(instance.sessions || []),
+    });
+
+    // 检查会话是否存在
+    if (!sessions[sessionId]) {
+      logger.info(`连接实例 - 会话不存在，自动创建新会话`, { sessionId });
+      sessions[sessionId] = createSession('anonymous');
+    }
+
+    // 关联会话和实例
+    const associationResult = registry.associateSessionWithInstance(sessionId, instanceId);
+    logger.info(`关联会话和实例结果`, { sessionId, instanceId, success: associationResult });
+
+    if (!associationResult) {
+      return res.status(500).json({
+        success: false,
+        error: '关联会话和实例失败',
+      });
+    }
+
+    // 如果会话中还没有这个MCP名称的连接
+    const mcpName = instance.mcpSession.name;
+    if (!sessions[sessionId].mcpSessions[mcpName]) {
+      // 创建MCP连接记录
+      sessions[sessionId].mcpSessions[mcpName] = {
+        name: mcpName,
+        instanceId: instanceId,
+        tools: instance.mcpSession.tools || [],
+        clientType: instance.mcpSession.clientType,
+        status: 'connected',
+        isFromOtherSession: true, // 标记为从其他会话共享的
+      };
+
+      logger.info(`会话已连接到MCP实例`, {
+        sessionId,
+        mcpName,
+        instanceId,
+      });
+    }
+
+    res.json({
+      success: true,
+      mcp: sessions[sessionId].mcpSessions[mcpName],
+    });
+  } catch (error) {
+    logger.error('连接MCP实例错误:', error);
+    console.error('连接MCP实例错误:', error);
+    res.status(500).json({
+      success: false,
+      error: `连接MCP实例失败: ${error.message}`,
     });
   }
 });

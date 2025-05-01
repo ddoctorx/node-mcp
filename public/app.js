@@ -385,31 +385,36 @@ const mcpManager = (() => {
   function deleteMcp(mcp) {
     toastManager.showToast(`正在移除 ${mcp.name}...`, 'info');
 
-    return fetch(`${API_BASE_URL}/mcp`, {
+    // 确保URL参数正确编码
+    const encodedName = encodeURIComponent(mcp.name);
+    const encodedSessionId = encodeURIComponent(sessionId);
+
+    return fetch(`${API_BASE_URL}/mcp?sessionId=${encodedSessionId}&name=${encodedName}`, {
       method: 'DELETE',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        sessionId,
-        name: mcp.name,
-      }),
     })
       .then(response => response.json())
       .then(data => {
         if (data.success) {
-          // 从列表中移除
-          mcpList = mcpList.filter(m => m.name !== mcp.name);
-          renderMcpList();
-          eventBus.emit('mcps-updated', mcpList);
+          // 成功删除后重新从服务器获取最新的MCP列表
+          loadMcpList()
+            .then(() => {
+              toastManager.showToast(`${mcp.name} 已移除`, 'success');
+              console.log('已刷新MCP列表');
+            })
+            .catch(err => {
+              console.error('刷新MCP列表失败:', err);
+            });
 
-          toastManager.showToast(`${mcp.name} 已移除`, 'success');
           return true;
         } else {
           throw new Error(data.error || `移除 ${mcp.name} 失败`);
         }
       })
       .catch(error => {
+        console.error('删除MCP失败:', error);
         toastManager.showToast(`移除 ${mcp.name} 失败: ${error.message}`, 'error');
         throw error;
       });
@@ -2185,11 +2190,38 @@ function connectWebSocket() {
         return;
       }
 
-      mcpList = mcpList.filter(mcp => mcp.name !== data.name);
-      renderMcpList();
+      // 查找要断开的MCP
+      const index = mcpList.findIndex(m => m.name === data.name);
+      if (index >= 0) {
+        // 先修改其状态为"断开中"
+        mcpList[index].status = 'disconnected';
+        renderMcpList();
 
-      if (eventBus && typeof eventBus.emit === 'function') {
-        eventBus.emit('mcps-updated', mcpList);
+        // 找到对应的DOM元素添加动画效果
+        setTimeout(() => {
+          const mcpCard = document.querySelector(`.mcp-card[data-mcp-name="${data.name}"]`);
+          if (mcpCard) {
+            mcpCard.classList.add('removing');
+
+            // 动画结束后再从列表中移除
+            setTimeout(() => {
+              mcpList = mcpList.filter(m => m.name !== data.name);
+              renderMcpList();
+
+              if (eventBus && typeof eventBus.emit === 'function') {
+                eventBus.emit('mcps-updated', mcpList);
+              }
+            }, 1000); // 与CSS中动画时长匹配
+          } else {
+            // 如果找不到DOM元素，直接从列表移除
+            mcpList = mcpList.filter(m => m.name !== data.name);
+            renderMcpList();
+
+            if (eventBus && typeof eventBus.emit === 'function') {
+              eventBus.emit('mcps-updated', mcpList);
+            }
+          }
+        }, 500); // 显示断开状态的延迟
       }
     });
 
@@ -2261,6 +2293,10 @@ function renderMcpList() {
   let emptyState = document.getElementById('empty-state');
   let mcpCountSpan = document.getElementById('mcp-count');
 
+  // 创建实例列表容器（如果不存在）
+  let mcpInstancesContainer = document.getElementById('mcp-instances-list');
+  let mcpInstancesCountSpan = document.getElementById('mcp-instances-count');
+
   // 初始化MCP列表（如果尚未初始化）
   if (!Array.isArray(mcpList)) {
     mcpList = [];
@@ -2295,14 +2331,41 @@ function renderMcpList() {
       mcpCountContainer.className = 'mcp-count-container';
       mcpCountContainer.innerHTML = '当前MCP: <span id="mcp-count">0</span>';
 
+      // 创建MCP实例列表容器
+      mcpInstancesContainer = document.createElement('div');
+      mcpInstancesContainer.id = 'mcp-instances-list';
+      mcpInstancesContainer.className = 'mcp-instances-list';
+
+      // 创建MCP实例计数容器
+      const mcpInstancesCountContainer = document.createElement('div');
+      mcpInstancesCountContainer.className = 'mcp-count-container';
+      mcpInstancesCountContainer.innerHTML = '可用实例: <span id="mcp-instances-count">0</span>';
+
+      // 创建刷新按钮
+      const refreshBtn = document.createElement('button');
+      refreshBtn.id = 'refresh-instances-btn';
+      refreshBtn.className = 'btn btn-primary';
+      refreshBtn.textContent = '刷新实例列表';
+      refreshBtn.addEventListener('click', loadAllMcpInstances);
+
+      // 创建实例列表标题
+      const instancesTitle = document.createElement('h3');
+      instancesTitle.textContent = '可用的MCP实例';
+      instancesTitle.className = 'section-title';
+
       // 清空标签页内容并重新添加元素
       listMcpTab.innerHTML = '';
       listMcpTab.appendChild(mcpCountContainer);
       listMcpTab.appendChild(emptyState);
       listMcpTab.appendChild(mcpListContainer);
+      listMcpTab.appendChild(instancesTitle);
+      listMcpTab.appendChild(mcpInstancesCountContainer);
+      listMcpTab.appendChild(refreshBtn);
+      listMcpTab.appendChild(mcpInstancesContainer);
 
       // 获取新创建的MCP计数元素
       mcpCountSpan = document.getElementById('mcp-count');
+      mcpInstancesCountSpan = document.getElementById('mcp-instances-count');
 
       // 为"添加第一个MCP"按钮添加事件监听
       const addFirstMcpBtn = emptyState.querySelector('.add-first-mcp-btn');
@@ -2330,91 +2393,273 @@ function renderMcpList() {
     // 显示空状态
     emptyState.style.display = 'flex';
     mcpListContainer.style.display = 'none';
+  } else {
+    // 隐藏空状态，显示列表容器
+    emptyState.style.display = 'none';
+    mcpListContainer.style.display = 'flex';
+
+    // 清空现有列表
+    mcpListContainer.innerHTML = '';
+
+    // 添加MCP卡片
+    mcpList.forEach(mcp => {
+      try {
+        const mcpCard = document.createElement('div');
+        mcpCard.className = 'mcp-card';
+        // 添加数据属性用于后续查找
+        mcpCard.setAttribute('data-mcp-name', mcp.name);
+
+        // 如果是从其他会话共享来的MCP，添加特殊样式
+        if (mcp.isFromOtherSession) {
+          mcpCard.classList.add('shared-mcp');
+        }
+
+        // 根据状态添加相应的类
+        if (mcp.status === 'disconnected') {
+          mcpCard.classList.add('disconnecting');
+        }
+
+        // 确保mcp.tools是一个数组
+        const tools = Array.isArray(mcp.tools) ? mcp.tools : [];
+
+        const toolsList =
+          tools.length > 0
+            ? tools
+                .map(
+                  tool => `
+          <div class="tool-item" onclick="showToolDialog('${mcp.name}', '${tool.name}')">
+            <div class="tool-name">${tool.name}</div>
+            <div class="tool-description">${tool.description || '无描述'}</div>
+          </div>
+        `,
+                )
+                .join('')
+            : '<div class="no-tools">无可用工具</div>';
+
+        mcpCard.innerHTML = `
+          <div class="mcp-header">
+            <div class="mcp-name">${mcp.name}</div>
+            <div class="mcp-type">${mcp.clientType}</div>
+            ${mcp.isFromOtherSession ? '<div class="mcp-shared-badge">共享</div>' : ''}
+          </div>
+          <div class="mcp-status">
+            <span class="status-label">状态:</span>
+            <span class="status-value ${
+              mcp.status === 'connected'
+                ? 'status-running'
+                : mcp.status === 'disconnected'
+                ? 'status-disconnecting'
+                : 'status-error'
+            }">${
+          mcp.status === 'connected' ? '运行中' : mcp.status === 'disconnected' ? '断开中' : '异常'
+        }</span>
+          </div>
+          <div class="mcp-details">
+            ${mcp.url ? `<div class="mcp-url">URL: ${mcp.url}</div>` : ''}
+            ${
+              mcp.command
+                ? `<div class="mcp-command">命令: ${mcp.command} ${
+                    Array.isArray(mcp.args) ? mcp.args.join(' ') : ''
+                  }</div>`
+                : ''
+            }
+          </div>
+          <div class="mcp-tools">
+            <div class="tools-header">可用工具:</div>
+            <div class="tools-list">
+              ${toolsList}
+            </div>
+          </div>
+          <div class="mcp-actions">
+            <button class="reconnect-btn" onclick="reconnectMcp(${JSON.stringify(mcp).replace(
+              /"/g,
+              '&quot;',
+            )})">重新连接</button>
+            <button class="delete-btn" onclick="deleteMcp(${JSON.stringify(mcp).replace(
+              /"/g,
+              '&quot;',
+            )})">断开连接</button>
+          </div>
+        `;
+
+        mcpListContainer.appendChild(mcpCard);
+      } catch (error) {
+        console.error('渲染MCP卡片时出错:', error, mcp);
+      }
+    });
+  }
+
+  // 加载所有可用的MCP实例
+  // 使用setTimeout确保DOM已经完全渲染
+  setTimeout(() => {
+    loadAllMcpInstances();
+  }, 100);
+
+  console.log('MCP列表渲染完成');
+}
+
+// 加载并显示所有可用的MCP实例
+function loadAllMcpInstances() {
+  // 确保容器存在
+  let mcpInstancesContainer = document.getElementById('mcp-instances-list');
+  const mcpInstancesCountSpan = document.getElementById('mcp-instances-count');
+
+  // 如果容器不存在，尝试找到list-mcp标签页并创建容器
+  if (!mcpInstancesContainer) {
+    console.log('MCP实例列表容器不存在，尝试创建...');
+    const listMcpTab = document.getElementById('list-mcp');
+
+    if (listMcpTab) {
+      // 创建MCP实例列表容器
+      mcpInstancesContainer = document.createElement('div');
+      mcpInstancesContainer.id = 'mcp-instances-list';
+      mcpInstancesContainer.className = 'mcp-instances-list';
+
+      // 创建标题（如果不存在）
+      if (!document.querySelector('.section-title')) {
+        const instancesTitle = document.createElement('h3');
+        instancesTitle.textContent = '可用的MCP实例';
+        instancesTitle.className = 'section-title';
+        listMcpTab.appendChild(instancesTitle);
+      }
+
+      // 创建实例计数容器（如果不存在）
+      if (!document.getElementById('mcp-instances-count')) {
+        const mcpInstancesCountContainer = document.createElement('div');
+        mcpInstancesCountContainer.className = 'mcp-count-container';
+        mcpInstancesCountContainer.innerHTML = '可用实例: <span id="mcp-instances-count">0</span>';
+        listMcpTab.appendChild(mcpInstancesCountContainer);
+      }
+
+      // 创建刷新按钮（如果不存在）
+      if (!document.getElementById('refresh-instances-btn')) {
+        const refreshBtn = document.createElement('button');
+        refreshBtn.id = 'refresh-instances-btn';
+        refreshBtn.className = 'btn btn-primary';
+        refreshBtn.textContent = '刷新实例列表';
+        refreshBtn.addEventListener('click', loadAllMcpInstances);
+        listMcpTab.appendChild(refreshBtn);
+      }
+
+      // 添加容器到页面
+      listMcpTab.appendChild(mcpInstancesContainer);
+      console.log('成功创建MCP实例列表容器');
+    } else {
+      console.error('无法找到list-mcp标签页');
+      return;
+    }
+  }
+
+  // 显示加载中状态
+  mcpInstancesContainer.innerHTML = '<div class="loading">加载中...</div>';
+
+  mcpManager
+    .getAllInstances()
+    .then(instances => {
+      // 清空容器
+      mcpInstancesContainer.innerHTML = '';
+
+      // 更新实例计数
+      const countSpan = document.getElementById('mcp-instances-count');
+      if (countSpan) {
+        countSpan.textContent = instances.length;
+      }
+
+      if (instances.length === 0) {
+        mcpInstancesContainer.innerHTML = '<div class="empty-instances">没有可用的MCP实例</div>';
+        return;
+      }
+
+      // 添加每个实例卡片
+      instances.forEach(instance => {
+        const instanceCard = document.createElement('div');
+        instanceCard.className = 'instance-card';
+
+        // 检查实例是否已经被当前会话连接
+        const isConnected = mcpList.some(mcp => mcp.name === instance.name);
+
+        instanceCard.innerHTML = `
+          <div class="instance-header">
+            <div class="instance-name">${instance.name || '未命名实例'}</div>
+            <div class="instance-type">${instance.type || 'unknown'}</div>
+            ${isConnected ? '<div class="instance-connected-badge">已连接</div>' : ''}
+          </div>
+          <div class="instance-details">
+            <div>实例ID: ${instance.instanceId}</div>
+            <div>创建时间: ${new Date(instance.createdTime).toLocaleString()}</div>
+            <div>最后使用: ${new Date(instance.lastUsedTime).toLocaleString()}</div>
+            <div>会话数: ${instance.sessionCount}</div>
+            <div>使用次数: ${instance.usageCount}</div>
+          </div>
+          <div class="instance-actions">
+            ${
+              isConnected
+                ? `<button class="btn btn-disabled" disabled>已连接</button>`
+                : `<button class="connect-instance-btn" data-instance-id="${instance.instanceId}" data-instance-name="${instance.name}">连接</button>`
+            }
+          </div>
+        `;
+
+        mcpInstancesContainer.appendChild(instanceCard);
+      });
+
+      // 为连接按钮添加事件监听
+      document.querySelectorAll('.connect-instance-btn').forEach(btn => {
+        btn.addEventListener('click', function () {
+          const instanceId = this.getAttribute('data-instance-id');
+          const instanceName = this.getAttribute('data-instance-name');
+          connectToInstance(instanceId, instanceName);
+        });
+      });
+    })
+    .catch(error => {
+      console.error('加载MCP实例列表失败:', error);
+      mcpInstancesContainer.innerHTML = `<div class="error">加载实例列表失败: ${error.message}</div>`;
+    });
+}
+
+// 连接到已有的MCP实例
+function connectToInstance(instanceId, instanceName) {
+  if (!sessionId) {
+    toastManager.showToast('无法连接实例: 没有活动会话', 'error');
     return;
   }
 
-  // 隐藏空状态，显示列表容器
-  emptyState.style.display = 'none';
-  mcpListContainer.style.display = 'flex';
+  toastManager.showToast(`正在连接到实例: ${instanceName}...`, 'info');
 
-  // 清空现有列表
-  mcpListContainer.innerHTML = '';
+  fetch(`${API_BASE_URL}/mcp/connect-instance`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      sessionId,
+      instanceId,
+    }),
+  })
+    .then(response => response.json())
+    .then(data => {
+      if (data.success) {
+        toastManager.showToast(`已连接到实例: ${instanceName}`, 'success');
 
-  // 添加MCP卡片
-  mcpList.forEach(mcp => {
-    try {
-      const mcpCard = document.createElement('div');
-      mcpCard.className = 'mcp-card';
-
-      // 如果是从其他会话共享来的MCP，添加特殊样式
-      if (mcp.isFromOtherSession) {
-        mcpCard.classList.add('shared-mcp');
+        // 刷新MCP列表
+        mcpManager
+          .loadMcpList()
+          .then(() => {
+            // 刷新实例列表
+            loadAllMcpInstances();
+          })
+          .catch(error => {
+            console.error('刷新MCP列表失败:', error);
+          });
+      } else {
+        throw new Error(data.error || '连接实例失败');
       }
-
-      // 确保mcp.tools是一个数组
-      const tools = Array.isArray(mcp.tools) ? mcp.tools : [];
-
-      const toolsList =
-        tools.length > 0
-          ? tools
-              .map(
-                tool => `
-        <div class="tool-item" onclick="showToolDialog('${mcp.name}', '${tool.name}')">
-          <div class="tool-name">${tool.name}</div>
-          <div class="tool-description">${tool.description || '无描述'}</div>
-        </div>
-      `,
-              )
-              .join('')
-          : '<div class="no-tools">无可用工具</div>';
-
-      mcpCard.innerHTML = `
-        <div class="mcp-header">
-          <div class="mcp-name">${mcp.name}</div>
-          <div class="mcp-type">${mcp.clientType}</div>
-          ${mcp.isFromOtherSession ? '<div class="mcp-shared-badge">共享</div>' : ''}
-        </div>
-        <div class="mcp-status">
-          <span class="status-label">状态:</span>
-          <span class="status-value ${
-            mcp.status === 'connected' ? 'status-running' : 'status-error'
-          }">${mcp.status === 'connected' ? '运行中' : '异常'}</span>
-        </div>
-        <div class="mcp-details">
-          ${mcp.url ? `<div class="mcp-url">URL: ${mcp.url}</div>` : ''}
-          ${
-            mcp.command
-              ? `<div class="mcp-command">命令: ${mcp.command} ${
-                  Array.isArray(mcp.args) ? mcp.args.join(' ') : ''
-                }</div>`
-              : ''
-          }
-        </div>
-        <div class="mcp-tools">
-          <div class="tools-header">可用工具:</div>
-          <div class="tools-list">
-            ${toolsList}
-          </div>
-        </div>
-        <div class="mcp-actions">
-          <button class="reconnect-btn" onclick="reconnectMcp(${JSON.stringify(mcp).replace(
-            /"/g,
-            '&quot;',
-          )})">重新连接</button>
-          <button class="delete-btn" onclick="deleteMcp(${JSON.stringify(mcp).replace(
-            /"/g,
-            '&quot;',
-          )})">断开连接</button>
-        </div>
-      `;
-
-      mcpListContainer.appendChild(mcpCard);
-    } catch (error) {
-      console.error('渲染MCP卡片时出错:', error, mcp);
-    }
-  });
-
-  console.log('MCP列表渲染完成');
+    })
+    .catch(error => {
+      console.error('连接实例失败:', error);
+      toastManager.showToast(`连接实例失败: ${error.message}`, 'error');
+    });
 }
 
 // 主初始化函数
@@ -2610,35 +2855,36 @@ function reconnectMcp(mcp) {
 
 // 删除MCP
 function deleteMcp(mcp) {
-  console.log('尝试删除MCP:', mcp);
+  toastManager.showToast(`正在移除 ${mcp.name}...`, 'info');
 
-  if (!mcpManager || typeof mcpManager.deleteMcp !== 'function') {
-    console.error('无法删除MCP: mcpManager.deleteMcp不可用');
-    return;
-  }
+  // 确保URL参数正确编码
+  const encodedName = encodeURIComponent(mcp.name);
+  const encodedSessionId = encodeURIComponent(sessionId);
 
-  if (!mcp || !mcp.name) {
-    console.error('无法删除MCP: 无效的MCP对象');
-    return;
-  }
+  return fetch(`${API_BASE_URL}/mcp?sessionId=${encodedSessionId}&name=${encodedName}`, {
+    method: 'DELETE',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  })
+    .then(response => response.json())
+    .then(data => {
+      if (data.success) {
+        // 从列表中移除
+        mcpList = mcpList.filter(m => m.name !== mcp.name);
+        renderMcpList();
+        eventBus.emit('mcps-updated', mcpList);
 
-  if (toastManager && typeof toastManager.showToast === 'function') {
-    toastManager.showToast(`正在移除 ${mcp.name}...`, 'info');
-  }
-
-  mcpManager
-    .deleteMcp(mcp)
-    .then(() => {
-      console.log(`${mcp.name} 已删除`);
-      if (toastManager && typeof toastManager.showToast === 'function') {
         toastManager.showToast(`${mcp.name} 已移除`, 'success');
+        return true;
+      } else {
+        throw new Error(data.error || `移除 ${mcp.name} 失败`);
       }
     })
     .catch(error => {
       console.error('删除MCP失败:', error);
-      if (toastManager && typeof toastManager.showToast === 'function') {
-        toastManager.showToast(`移除 ${mcp.name} 失败: ${error.message}`, 'error');
-      }
+      toastManager.showToast(`移除 ${mcp.name} 失败: ${error.message}`, 'error');
+      throw error;
     });
 }
 
@@ -3205,3 +3451,9 @@ function handleConfigParse() {
     }
   }
 }
+
+// 将函数公开到全局作用域中
+window.loadAllMcpInstances = loadAllMcpInstances;
+window.connectToInstance = connectToInstance;
+window.reconnectMcp = reconnectMcp;
+window.deleteMcp = deleteMcp;

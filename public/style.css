@@ -1,0 +1,311 @@
+/* MCP实例列表样式 */
+.mcp-instances-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 20px;
+  width: 100%;
+}
+
+.section-title {
+  margin-top: 30px;
+  margin-bottom: 10px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid #ddd;
+  color: #333;
+}
+
+.instance-card {
+  display: flex;
+  flex-direction: column;
+  background-color: #f8f8f8;
+  border: 1px solid #ddd;
+  border-radius: 5px;
+  padding: 12px;
+  transition: all 0.3s ease;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+}
+
+.instance-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+.instance-header {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  margin-bottom: 10px;
+  gap: 10px;
+}
+
+.instance-name {
+  font-weight: bold;
+  font-size: 16px;
+  color: #333;
+}
+
+.instance-type {
+  background-color: #e6f3ff;
+  color: #0066cc;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+.instance-connected-badge {
+  background-color: #e6ffe6;
+  color: #008800;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  margin-left: auto;
+}
+
+.instance-details {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 15px;
+  font-size: 13px;
+  color: #555;
+}
+
+.instance-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.connect-instance-btn {
+  background-color: #4caf50;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background-color 0.3s;
+}
+
+.connect-instance-btn:hover {
+  background-color: #45a049;
+}
+
+.btn-disabled {
+  background-color: #cccccc;
+  color: #666666;
+  cursor: not-allowed;
+}
+
+.loading,
+.empty-instances,
+.error {
+  padding: 20px;
+  text-align: center;
+  color: #666;
+  font-style: italic;
+  background-color: #f9f9f9;
+  border-radius: 5px;
+  margin: 10px 0;
+}
+
+.error {
+  color: #d32f2f;
+  background-color: #ffebee;
+}
+
+#refresh-instances-btn {
+  margin-top: 10px;
+  align-self: flex-end;
+}
+
+/* MCP卡片样式 */
+.mcp-card {
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 15px;
+  margin-bottom: 15px;
+  background-color: #fff;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  transition: all 0.3s ease;
+}
+
+.mcp-card.disconnecting {
+  background-color: #fff9c4;
+  border-color: #ffd54f;
+  opacity: 0.8;
+}
+
+.mcp-card.removing {
+  animation: fadeOut 1s forwards;
+  pointer-events: none;
+}
+
+@keyframes fadeOut {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-10px);
+    height: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+}
+
+.mcp-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.mcp-name {
+  font-weight: bold;
+  font-size: 18px;
+  margin-right: 10px;
+}
+
+.mcp-type {
+  background-color: #e3f2fd;
+  color: #1976d2;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+}
+
+.mcp-shared-badge {
+  margin-left: auto;
+  background-color: #e8f5e9;
+  color: #388e3c;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+}
+
+.mcp-status {
+  display: flex;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.status-label {
+  margin-right: 5px;
+  font-weight: 500;
+}
+
+.status-value {
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 13px;
+}
+
+.status-running {
+  background-color: #e8f5e9;
+  color: #388e3c;
+}
+
+.status-error {
+  background-color: #ffebee;
+  color: #d32f2f;
+}
+
+.status-disconnecting {
+  background-color: #fff8e1;
+  color: #ff8f00;
+}
+
+.mcp-details {
+  margin-bottom: 15px;
+  font-size: 14px;
+  color: #666;
+}
+
+.mcp-tools {
+  margin-bottom: 15px;
+}
+
+.tools-header {
+  font-weight: 500;
+  margin-bottom: 8px;
+  font-size: 15px;
+}
+
+.tools-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tool-item {
+  background-color: #f5f5f5;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  padding: 8px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.tool-item:hover {
+  background-color: #e0e0e0;
+}
+
+.tool-name {
+  font-weight: 500;
+  margin-bottom: 3px;
+}
+
+.tool-description {
+  font-size: 12px;
+  color: #666;
+}
+
+.no-tools {
+  font-style: italic;
+  color: #999;
+  padding: 5px 0;
+}
+
+.mcp-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.reconnect-btn,
+.delete-btn {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background-color 0.2s;
+}
+
+.reconnect-btn {
+  background-color: #2196f3;
+  color: white;
+}
+
+.reconnect-btn:hover {
+  background-color: #1976d2;
+}
+
+.delete-btn {
+  background-color: #f44336;
+  color: white;
+}
+
+.delete-btn:hover {
+  background-color: #d32f2f;
+}
+
+.delete-btn:disabled,
+.reconnect-btn:disabled {
+  background-color: #bdbdbd;
+  cursor: not-allowed;
+}

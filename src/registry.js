@@ -50,6 +50,8 @@ function registerInstance(instanceId, config, mcpSession, userId = 'anonymous') 
       userMcpInstances[userId] = new Set();
     }
     userMcpInstances[userId].add(signature);
+
+    console.log(`已将实例[${instanceId}]关联到用户[${userId}]，签名[${signature}]`);
   }
 
   return mcpInstances[signature];
@@ -64,12 +66,16 @@ function findMatchingInstance(config) {
 // 查找用户的所有MCP服务实例
 function findUserInstances(userId) {
   if (!userId || !userMcpInstances[userId]) {
+    console.log(`未找到用户[${userId}]的实例记录`);
     return [];
   }
 
-  return Array.from(userMcpInstances[userId])
+  const instances = Array.from(userMcpInstances[userId])
     .map(signature => mcpInstances[signature])
-    .filter(Boolean); // 过滤掉可能已不存在的实例
+    .filter(Boolean);
+
+  console.log(`用户[${userId}]找到${instances.length}个实例`);
+  return instances;
 }
 
 // 获取实例详情
@@ -79,15 +85,19 @@ function getInstanceDetail(instanceId) {
 
 // 关联会话与MCP实例
 function associateSessionWithInstance(sessionId, instanceId) {
-  Object.values(mcpInstances).forEach(instance => {
+  console.log(`尝试关联会话[${sessionId}]与实例[${instanceId}]`);
+
+  for (const instance of Object.values(mcpInstances)) {
     if (instance.instanceId === instanceId) {
       instance.sessions.add(sessionId);
       instance.lastUsedTime = Date.now();
       instance.usageCount += 1;
+      console.log(`成功关联会话[${sessionId}]与实例[${instanceId}]`);
       return true;
     }
-  });
+  }
 
+  console.log(`关联失败：找不到实例[${instanceId}]`);
   return false;
 }
 
