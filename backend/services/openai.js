@@ -1,6 +1,6 @@
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
-const { logger, openai: openaiLogger, functionCalling } = require('./logger');
+const { logger, openai: openaiLogger, functionCalling } = require('../utils/logger');
 
 // OpenAI API配置
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;

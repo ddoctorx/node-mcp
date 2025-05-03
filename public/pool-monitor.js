@@ -89,7 +89,7 @@ const poolMonitor = (() => {
 
   // 刷新池状态
   function refreshPoolStats() {
-    fetch('/api/mcp/pool')
+    fetch('/api/mcp/stats')
       .then(response => {
         if (!response.ok) {
           throw new Error(`请求失败: ${response.status}`);

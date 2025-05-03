@@ -2,9 +2,11 @@
   "name": "node-mcp",
   "version": "1.0.0",
   "description": "简单的MCP注册实现",
-  "main": "src/server.js",
+  "main": "backend/index.js",
   "scripts": {
-    "start": "node src/server.js"
+    "start": "node backend/index.js",
+    "dev": "nodemon backend/index.js",
+    "old": "node src/server.js"
   },
   "dependencies": {
     "axios": "^1.6.2",
@@ -15,5 +17,8 @@
     "socket.io": "^4.7.2",
     "uuid": "^9.0.1",
     "winston": "^3.17.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
   }
 }

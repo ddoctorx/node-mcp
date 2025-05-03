@@ -18,6 +18,34 @@ let mcpList = [];
     .editable-user-id:hover {
       color: #004080;
     }
+    .command-warning {
+      margin-bottom: 15px;
+      padding: 10px;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+    .warning-message {
+      background-color: #fff3cd;
+      border: 1px solid #ffeeba;
+      color: #856404;
+      padding: 10px;
+      border-radius: 4px;
+    }
+    .success-message {
+      background-color: #d4edda;
+      border: 1px solid #c3e6cb;
+      color: #155724;
+      padding: 10px;
+      border-radius: 4px;
+    }
+    .details {
+      margin-top: 8px;
+      padding: 8px;
+      background-color: rgba(0,0,0,0.05);
+      border-radius: 3px;
+      font-size: 12px;
+      overflow-x: auto;
+    }
   `;
   document.head.appendChild(style);
 })();
@@ -158,7 +186,7 @@ const sessionManager = (() => {
     allButtons.forEach(btn => (btn.disabled = true));
     toastManager.showToast('正在创建新会话...', 'info');
 
-    return fetch(`${API_BASE_URL}/session`, {
+    return fetch(`${API_BASE_URL}/sessions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -229,13 +257,14 @@ const sessionManager = (() => {
   // 获取用户的所有会话
   function getUserSessions() {
     if (!userId) {
-      return Promise.reject(new Error('没有用户ID'));
+      toastManager.showToast('未登录，无法获取会话列表', 'error');
+      return Promise.resolve([]);
     }
 
-    return fetch(`${API_BASE_URL}/sessions/user/${userId}`)
+    return fetch(`${API_BASE_URL}/users/${userId}/sessions`)
       .then(response => {
         if (!response.ok) {
-          throw new Error(`获取会话列表失败: ${response.status} ${response.statusText}`);
+          throw new Error(`获取用户会话列表失败: ${response.status} ${response.statusText}`);
         }
         return response.json();
       })
@@ -243,7 +272,7 @@ const sessionManager = (() => {
         if (data.success) {
           return data.sessions;
         } else {
-          throw new Error(data.error || '获取用户会话失败');
+          throw new Error(data.error || '获取用户会话列表失败');
         }
       });
   }
@@ -274,81 +303,117 @@ const mcpManager = (() => {
   }
 
   function loadMcpList() {
-    if (!sessionId) {
-      console.warn('尝试加载MCP列表，但会话ID不存在');
-      return Promise.reject(new Error('会话ID不存在'));
-    }
+    if (!sessionId) return Promise.resolve([]);
 
-    return fetch(`${API_BASE_URL}/mcp?sessionId=${sessionId}`)
+    const encodedSessionId = encodeURIComponent(sessionId);
+    return fetch(`${API_BASE_URL}/sessions/${encodedSessionId}/mcp`, {
+      headers: {
+        'X-Session-ID': sessionId,
+      },
+    })
       .then(response => {
         if (!response.ok) {
-          throw new Error(`请求失败: ${response.status} ${response.statusText}`);
+          throw new Error(`获取MCP列表失败: ${response.status} ${response.statusText}`);
         }
         return response.json();
       })
       .then(data => {
         if (data.success) {
-          mcpList = data.mcps || [];
-          // 更新实例ID映射
-          mcpList.forEach(mcp => {
-            if (mcp.instanceId) {
-              mcpInstanceMap[mcp.name] = mcp.instanceId;
-            }
-          });
-          renderMcpList();
-          eventBus.emit('mcps-updated', mcpList);
-          return mcpList;
+          mcpList = data.mcps;
+          return data.mcps;
         } else {
-          throw new Error(data.error || '加载MCP列表失败');
+          throw new Error(data.error || '获取MCP列表失败');
         }
       });
   }
 
   function addMcp(payload) {
-    // 添加instanceId字段
-    if (mcpInstanceMap[payload.name]) {
-      payload.instanceId = mcpInstanceMap[payload.name];
+    if (!sessionId) {
+      toastManager.showToast('会话无效，无法添加MCP', 'error');
+      return Promise.reject(new Error('会话无效'));
     }
 
-    console.log('发送MCP添加请求:', JSON.stringify(payload, null, 2));
+    // 调整payload格式，适应新接口
+    const newPayload = {
+      name: payload.name,
+      clientType: payload.clientType,
+      config: {},
+    };
 
-    return fetch(`${API_BASE_URL}/mcp`, {
+    // 检测输入格式 - 如果有command/args/setup等字段但没有config字段，说明是旧格式
+    const isOldFormat = !payload.config && (payload.command || payload.args || payload.setup);
+
+    if (isOldFormat) {
+      console.log('检测到旧格式参数，进行转换');
+
+      // 根据客户端类型封装参数到config对象中
+      if (payload.clientType === 'stdio') {
+        newPayload.config = {
+          command: payload.command || '',
+          args: Array.isArray(payload.args) ? payload.args : [],
+          description: payload.description || `${payload.name} MCP服务`,
+        };
+
+        // 确保setup完整复制
+        if (payload.setup) {
+          newPayload.config.setup = {
+            command: payload.setup.command,
+            args: Array.isArray(payload.setup.args) ? payload.setup.args : [],
+            description: payload.setup.description || '设置环境',
+          };
+        }
+
+        // 复制环境变量
+        if (payload.env) {
+          newPayload.config.env = payload.env;
+        }
+      } else if (payload.clientType === 'sse') {
+        newPayload.config = {
+          url: payload.url || '',
+          description: payload.description,
+        };
+      }
+    } else {
+      // 使用现有的config对象
+      newPayload.config = payload.config || {};
+    }
+
+    // 确保config不为空对象，且包含必须的字段
+    if (Object.keys(newPayload.config).length === 0) {
+      console.error('警告: 生成的config对象为空', payload);
+      toastManager.showToast('MCP配置无效：缺少必要参数', 'error');
+      return Promise.reject(new Error('MCP配置无效：缺少必要参数'));
+    }
+
+    // 对于stdio类型，确保command和args字段存在
+    if (payload.clientType === 'stdio' && !newPayload.config.command) {
+      console.error('警告: stdio类型MCP缺少command字段', newPayload);
+      toastManager.showToast('MCP配置无效：缺少command字段', 'error');
+      return Promise.reject(new Error('MCP配置无效：缺少command字段'));
+    }
+
+    console.log('转换后的payload:', JSON.stringify(newPayload, null, 2));
+
+    const encodedSessionId = encodeURIComponent(sessionId);
+    return fetch(`${API_BASE_URL}/sessions/${encodedSessionId}/mcp`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'X-Session-ID': sessionId,
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(newPayload),
     })
-      .then(response => response.json())
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`添加MCP失败: ${response.status} ${response.statusText}`);
+        }
+        return response.json();
+      })
       .then(data => {
-        if (data.success && data.mcp) {
-          // 保存实例ID映射
-          if (data.instanceId) {
-            mcpInstanceMap[data.mcp.name] = data.instanceId;
-            // 添加实例ID到MCP对象
-            data.mcp.instanceId = data.instanceId;
-          }
-
-          // 显示实例复用信息
-          if (!data.isNew && data.isPooled) {
-            toastManager.showToast(`已复用已有的MCP实例: ${data.mcp.name}`, 'info');
-          }
-
-          // 添加到列表并渲染
-          const existingIndex = mcpList.findIndex(m => m.name === data.mcp.name);
-
-          if (existingIndex >= 0) {
-            mcpList[existingIndex] = data.mcp;
-          } else {
-            mcpList.push(data.mcp);
-          }
-
-          renderMcpList();
-          eventBus.emit('mcps-updated', mcpList);
-
-          return data.mcp;
+        if (data.success) {
+          return data;
         } else {
-          throw new Error(data.error || 'MCP添加失败');
+          throw new Error(data.error || '添加MCP失败');
         }
       });
   }
@@ -383,57 +448,47 @@ const mcpManager = (() => {
   }
 
   function deleteMcp(mcp) {
-    toastManager.showToast(`正在移除 ${mcp.name}...`, 'info');
+    if (!sessionId || !mcp || !mcp.name) {
+      toastManager.showToast('无效的会话或MCP', 'error');
+      return Promise.reject(new Error('无效的会话或MCP'));
+    }
 
-    // 确保URL参数正确编码
-    const encodedName = encodeURIComponent(mcp.name);
     const encodedSessionId = encodeURIComponent(sessionId);
+    const encodedName = encodeURIComponent(mcp.name);
 
-    return fetch(`${API_BASE_URL}/mcp?sessionId=${encodedSessionId}&name=${encodedName}`, {
+    return fetch(`${API_BASE_URL}/sessions/${encodedSessionId}/mcp`, {
       method: 'DELETE',
       headers: {
         'Content-Type': 'application/json',
+        'X-Session-ID': sessionId,
       },
+      body: JSON.stringify({ name: mcp.name }),
     })
-      .then(response => response.json())
-      .then(data => {
-        if (data.success) {
-          // 成功删除后重新从服务器获取最新的MCP列表
-          loadMcpList()
-            .then(() => {
-              toastManager.showToast(`${mcp.name} 已移除`, 'success');
-              console.log('已刷新MCP列表');
-            })
-            .catch(err => {
-              console.error('刷新MCP列表失败:', err);
-            });
-
-          return true;
-        } else {
-          throw new Error(data.error || `移除 ${mcp.name} 失败`);
-        }
-      })
-      .catch(error => {
-        console.error('删除MCP失败:', error);
-        toastManager.showToast(`移除 ${mcp.name} 失败: ${error.message}`, 'error');
-        throw error;
-      });
-  }
-
-  // 获取池状态信息
-  function getPoolStats() {
-    return fetch(`${API_BASE_URL}/mcp/pool`)
       .then(response => {
         if (!response.ok) {
-          throw new Error(`请求失败: ${response.status} ${response.statusText}`);
+          throw new Error(`删除MCP失败: ${response.status} ${response.statusText}`);
         }
         return response.json();
       })
       .then(data => {
         if (data.success) {
+          toastManager.showToast(`已成功删除MCP: ${mcp.name}`, 'success');
+          return true;
+        } else {
+          throw new Error(data.error || '删除MCP失败');
+        }
+      });
+  }
+
+  // 获取池状态信息
+  function getPoolStats() {
+    return fetch(`${API_BASE_URL}/mcp/stats`)
+      .then(response => response.json())
+      .then(data => {
+        if (data.success) {
           return data.stats;
         } else {
-          throw new Error(data.error || '获取MCP池状态失败');
+          throw new Error(data.error || '获取池统计信息失败');
         }
       });
   }
@@ -441,17 +496,12 @@ const mcpManager = (() => {
   // 获取所有MCP实例
   function getAllInstances() {
     return fetch(`${API_BASE_URL}/mcp/instances`)
-      .then(response => {
-        if (!response.ok) {
-          throw new Error(`请求失败: ${response.status} ${response.statusText}`);
-        }
-        return response.json();
-      })
+      .then(response => response.json())
       .then(data => {
         if (data.success) {
           return data.instances;
         } else {
-          throw new Error(data.error || '获取MCP实例列表失败');
+          throw new Error(data.error || '获取实例列表失败');
         }
       });
   }
@@ -582,44 +632,40 @@ const chatModule = (() => {
 
   // 加载聊天历史
   async function loadChatHistory() {
-    const currentSessionId = sessionManager.getSessionId();
+    const currentSessionId = sessionId;
     if (!currentSessionId) {
-      console.warn('尝试加载聊天历史，但会话ID不存在');
+      console.warn('没有有效的会话ID，无法加载聊天历史');
       return;
     }
 
     try {
-      clearChatMessages();
-      addSystemMessage('加载聊天历史...');
-
-      const response = await fetch(`/api/chat/history/${currentSessionId}`);
-
-      if (!response.ok) {
-        throw new Error(`请求失败: ${response.status} ${response.statusText}`);
-      }
-
+      const response = await fetch(`${API_BASE_URL}/sessions/${currentSessionId}/history`, {
+        headers: {
+          'X-Session-ID': currentSessionId,
+        },
+      });
       const data = await response.json();
 
-      if (data.success && data.history && data.history.length > 0) {
+      if (data.success && data.history) {
         clearChatMessages();
 
-        // 重建聊天历史
-        for (const message of data.history) {
-          if (message.role === 'user') {
-            addUserMessage(message.content);
-          } else if (message.role === 'assistant' && message.content) {
-            addAssistantMessage(message.content);
-          } else if (message.role === 'assistant' && message.tool_calls) {
-            // 处理函数调用，但不渲染，因为后面会有最终结果
-            // 这里可以根据需求改进，例如显示函数调用过程
+        // 渲染历史消息
+        data.history.forEach(item => {
+          if (item.type === 'user') {
+            addUserMessage(item.content);
+          } else if (item.type === 'assistant') {
+            addAssistantMessage(item.content);
+          } else if (item.type === 'function_call') {
+            addFunctionCallInfo(item);
           }
-        }
+        });
+
+        scrollToBottom();
       } else {
-        addSystemMessage('开始新的对话');
+        console.error('加载聊天历史失败:', data.error);
       }
     } catch (error) {
-      console.error('加载聊天历史失败:', error);
-      addSystemMessage('加载聊天历史失败: ' + error.message);
+      console.error('加载聊天历史出错:', error);
     }
   }
 
@@ -628,7 +674,7 @@ const chatModule = (() => {
     const message = chatInput.value.trim();
     if (!message || isLoading) return;
 
-    const currentSessionId = sessionManager.getSessionId();
+    const currentSessionId = sessionId;
     if (!currentSessionId) {
       addSystemMessage('未找到会话，请重新连接');
       return;
@@ -648,14 +694,41 @@ const chatModule = (() => {
     try {
       addSystemMessage('AI思考中...');
 
-      const response = await fetch('/api/chat', {
+      // 获取聊天历史用于上下文
+      const history = await fetch(`${API_BASE_URL}/sessions/${currentSessionId}/history`, {
+        headers: {
+          'X-Session-ID': currentSessionId,
+        },
+      })
+        .then(res => res.json())
+        .then(data => (data.success ? data.history : []));
+
+      // 构造消息数组，包含历史消息和当前消息
+      const messages = [];
+
+      // 添加历史消息作为上下文
+      if (history && history.length > 0) {
+        history.forEach(item => {
+          if (item.type === 'user') {
+            messages.push({ role: 'user', content: item.content });
+          } else if (item.type === 'assistant') {
+            messages.push({ role: 'assistant', content: item.content });
+          }
+          // function_call类型的消息不添加到上下文中
+        });
+      }
+
+      // 添加当前消息
+      messages.push({ role: 'user', content: message });
+
+      const response = await fetch(`${API_BASE_URL}/sessions/${currentSessionId}/messages`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'X-Session-ID': currentSessionId,
         },
         body: JSON.stringify({
-          sessionId: currentSessionId,
-          message,
+          message: messages,
         }),
       });
 
@@ -669,17 +742,13 @@ const chatModule = (() => {
       const data = await response.json();
 
       if (data.success) {
-        if (data.type === 'text') {
+        const responseData = data.response;
+        if (responseData.type === 'text') {
           // 普通文本响应
-          addAssistantMessage(data.content);
-        } else if (data.type === 'function_result') {
+          addAssistantMessage(responseData.content);
+        } else if (responseData.type === 'function_call') {
           // 函数调用结果
-          addFunctionCallInfo(data);
-
-          // 添加最终响应
-          if (data.final_response) {
-            addAssistantMessage(data.final_response);
-          }
+          addFunctionCallInfo(responseData);
         }
       } else {
         addSystemMessage(`错误: ${data.error || '未知错误'}`);
@@ -699,32 +768,31 @@ const chatModule = (() => {
 
   // 清除聊天历史
   async function clearChat() {
-    const currentSessionId = sessionManager.getSessionId();
+    const currentSessionId = sessionId;
     if (!currentSessionId) {
-      addSystemMessage('未找到会话，无法清除聊天历史');
+      console.warn('没有有效的会话ID，无法清除聊天');
       return;
     }
 
     try {
-      const response = await fetch(`/api/chat/history/${currentSessionId}`, {
+      const response = await fetch(`${API_BASE_URL}/sessions/${currentSessionId}/history`, {
         method: 'DELETE',
+        headers: {
+          'X-Session-ID': currentSessionId,
+        },
       });
-
-      if (!response.ok) {
-        throw new Error(`清除失败: ${response.status} ${response.statusText}`);
-      }
-
       const data = await response.json();
 
       if (data.success) {
         clearChatMessages();
-        addSystemMessage('聊天历史已清除');
+        addSystemMessage('聊天记录已清除');
       } else {
-        addSystemMessage(`清除失败: ${data.error || '未知错误'}`);
+        console.error('清除聊天记录失败:', data.error);
+        toastManager.showToast('清除聊天记录失败', 'error');
       }
     } catch (error) {
-      console.error('清除聊天历史失败:', error);
-      addSystemMessage(`清除失败: ${error.message}`);
+      console.error('清除聊天记录出错:', error);
+      toastManager.showToast(`清除聊天记录出错: ${error.message}`, 'error');
     }
   }
 
@@ -782,118 +850,60 @@ const chatModule = (() => {
 
   // 添加函数调用信息
   function addFunctionCallInfo(data) {
-    // 只显示第一个函数调用，如果需要可以扩展为显示多个
-    if (!data.function_calls || !data.function_calls.length) return;
+    if (!data.calls || !data.calls.length) return;
 
-    const call = data.function_calls[0];
-    const result = data.results.find(r => r.tool_call_id === call.id);
+    // 创建函数调用容器
+    const callContainer = document.createElement('div');
+    callContainer.className = 'function-calls-container';
 
-    if (!call || !result) return;
+    // 处理每个函数调用
+    data.calls.forEach((call, index) => {
+      // 找到对应的结果
+      const result = data.results.find(r => r.tool_call_id === call.id);
+      if (!call || !result) return;
 
-    const clone = functionCallTemplate.content.cloneNode(true);
+      const callElement = document.createElement('div');
+      callElement.className = 'function-call-item';
 
-    clone.querySelector('.function-name').textContent = call.function.name;
-
-    try {
-      // 格式化参数
-      const params = JSON.parse(call.function.arguments);
-      clone.querySelector('.function-params').textContent = JSON.stringify(params, null, 2);
-
-      // 格式化结果
-      let resultObj;
+      // 函数名称
+      const nameElement = document.createElement('div');
+      nameElement.className = 'function-name';
+      nameElement.textContent = call.function.name;
+      callElement.appendChild(nameElement);
 
       try {
-        // 尝试解析JSON字符串
-        resultObj = JSON.parse(result.result);
+        // 参数部分
+        const paramsElement = document.createElement('pre');
+        paramsElement.className = 'function-params';
+        const params = JSON.parse(call.function.arguments || '{}');
+        paramsElement.textContent = JSON.stringify(params, null, 2);
+        callElement.appendChild(paramsElement);
 
-        // 处理嵌套的特殊格式，如高德地图API的结果
-        // 检查是否有特殊的嵌套structure: {"result":{"content":[{"type":"text","text":"JSON字符串"}]}}
-        if (
-          resultObj.result &&
-          resultObj.result.content &&
-          Array.isArray(resultObj.result.content)
-        ) {
-          // 尝试从content中提取text属性中的JSON字符串
-          const textContent = resultObj.result.content.find(
-            item => item.type === 'text' && item.text,
-          );
-          if (textContent && textContent.text) {
-            try {
-              // 尝试解析text字段中的JSON
-              const parsedTextContent = JSON.parse(textContent.text);
-              // 使用解析后的内容替换结果对象
-              resultObj = parsedTextContent;
-            } catch (e) {
-              console.error('解析内嵌text字段JSON失败:', e);
-              // 保持原有结果不变
-            }
-          }
+        // 结果部分
+        const resultElement = document.createElement('pre');
+        resultElement.className = 'function-result';
+
+        try {
+          // 尝试解析结果JSON
+          const resultObj = JSON.parse(result.result);
+          resultElement.textContent = JSON.stringify(resultObj, null, 2);
+        } catch (e) {
+          // 如果不是JSON，直接显示结果
+          resultElement.textContent = result.result;
         }
 
-        // 确保以格式化的方式显示JSON对象
-        clone.querySelector('.function-result').textContent = JSON.stringify(resultObj, null, 2);
-      } catch (e) {
-        // 如果不是有效的JSON，直接显示原始内容
-        if (typeof result.result === 'string') {
-          // 尝试检测是否是未正确解析的JSON字符串（有时候API返回的是带引号的JSON字符串）
-          if (result.result.startsWith('"') && result.result.endsWith('"')) {
-            try {
-              // 去掉外层引号并尝试解析
-              const unquoted = result.result.slice(1, -1).replace(/\\"/g, '"');
-              resultObj = JSON.parse(unquoted);
-
-              // 同样检查是否有特殊的嵌套格式
-              if (
-                resultObj.result &&
-                resultObj.result.content &&
-                Array.isArray(resultObj.result.content)
-              ) {
-                const textContent = resultObj.result.content.find(
-                  item => item.type === 'text' && item.text,
-                );
-                if (textContent && textContent.text) {
-                  try {
-                    const parsedTextContent = JSON.parse(textContent.text);
-                    resultObj = parsedTextContent;
-                  } catch (e) {
-                    console.error('解析内嵌text字段JSON失败:', e);
-                  }
-                } else {
-                  resultObj = JSON.stringify(resultValue, null, 2);
-                }
-              } else {
-                resultObj = JSON.stringify(resultValue, null, 2);
-              }
-
-              clone.querySelector('.function-result').textContent = JSON.stringify(
-                resultObj,
-                null,
-                2,
-              );
-            } catch (e2) {
-              // 如果仍然失败，显示原始内容
-              clone.querySelector('.function-result').textContent = result.result;
-            }
-          } else {
-            clone.querySelector('.function-result').textContent = result.result;
-          }
-        } else {
-          // 如果已经是对象，直接格式化
-          clone.querySelector('.function-result').textContent = JSON.stringify(
-            result.result,
-            null,
-            2,
-          );
-        }
+        callElement.appendChild(resultElement);
+      } catch (error) {
+        const errorElement = document.createElement('div');
+        errorElement.className = 'error-message';
+        errorElement.textContent = `解析失败: ${error.message}`;
+        callElement.appendChild(errorElement);
       }
-    } catch (e) {
-      console.error('解析函数调用信息失败:', e);
-      // 降级处理
-      clone.querySelector('.function-params').textContent = call.function.arguments;
-      clone.querySelector('.function-result').textContent = result.result;
-    }
 
-    chatMessages.appendChild(clone);
+      callContainer.appendChild(callElement);
+    });
+
+    chatMessages.appendChild(callContainer);
     scrollToBottom();
   }
 
@@ -1467,27 +1477,25 @@ const pythonMcpManager = {
       pipSetupArgs = ['install', packageName];
     }
 
-    // 创建配置
-    const config = {
-      command: pythonCommand,
-      args: args,
-      description: `Python ${packageName} MCP服务器`,
-      setup: {
-        command: pipSetupCommand,
-        args: pipSetupArgs,
-        description: `安装${packageName}包`,
-      },
+    // 创建完整的配置
+    const setupConfig = {
+      command: pipSetupCommand,
+      args: pipSetupArgs,
+      description: `安装${packageName}包`,
     };
 
-    // 准备请求负载
+    // 准备最终请求负载 - 直接使用mcpServers格式，让转换发生在mcpManager.addMcp中
     const payload = {
       sessionId,
       name,
       clientType: 'stdio',
-      command: config.command,
-      args: config.args,
-      setup: config.setup,
+      command: pythonCommand,
+      args: args,
+      description: `Python ${packageName} MCP服务器`,
+      setup: setupConfig,
     };
+
+    console.log('准备发送的Python MCP payload:', JSON.stringify(payload, null, 2));
 
     // 显示加载状态
     document.getElementById('create-python-mcp-btn').disabled = true;
@@ -1538,6 +1546,65 @@ const gitMcpManager = {
   init() {
     this.setupEventListeners();
     this.updatePreview();
+    this.checkGitCommand(); // 添加对git命令的检查
+  },
+
+  // 检查git命令是否存在
+  checkGitCommand() {
+    fetch('/api/mcp/diagnose', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        command: 'git',
+      }),
+    })
+      .then(response => response.json())
+      .then(data => {
+        const warningContainer = document.getElementById('git-command-warning');
+        if (!warningContainer) {
+          // 创建警告容器
+          const gitForm = document.getElementById('git-mcp-form');
+          if (gitForm) {
+            const warningDiv = document.createElement('div');
+            warningDiv.id = 'git-command-warning';
+            warningDiv.className = 'command-warning';
+            gitForm.insertBefore(warningDiv, gitForm.firstChild);
+          }
+        }
+
+        // 获取警告容器
+        const warningDiv = document.getElementById('git-command-warning');
+        if (warningDiv) {
+          if (!data.result.success) {
+            warningDiv.innerHTML = `
+            <div class="warning-message">
+              <strong>警告:</strong> 系统中找不到git命令。请确保已安装Git并添加到PATH环境变量中。
+              <div class="details">
+                <code>PATH=${data.env.PATH}</code>
+              </div>
+            </div>
+          `;
+            warningDiv.style.display = 'block';
+          } else {
+            warningDiv.innerHTML = `
+            <div class="success-message">
+              <strong>检测到Git:</strong> ${data.result.path}
+            </div>
+          `;
+            warningDiv.style.display = 'block';
+
+            // 3秒后隐藏成功消息
+            setTimeout(() => {
+              warningDiv.style.display = 'none';
+            }, 3000);
+          }
+        }
+      })
+      .catch(error => {
+        console.error('检查Git命令失败:', error);
+      });
   },
 
   setupEventListeners() {
@@ -1687,19 +1754,22 @@ const gitMcpManager = {
     // 克隆到当前目录
     gitArgs.push('.');
 
-    // 创建MCP配置
+    // 创建MCP配置 - 使用原始格式，让转换发生在mcpManager.addMcp中
     const mcpConfig = {
       sessionId: currentSessionId,
       name: name,
       clientType: 'stdio',
       command: command,
       args: args,
+      description: 'Git仓库MCP服务',
       setup: {
         command: 'git',
         args: gitArgs,
         description: '克隆Git仓库',
       },
     };
+
+    console.log('准备发送的Git MCP payload:', JSON.stringify(mcpConfig, null, 2));
 
     // 禁用按钮，防止重复提交
     document.getElementById('create-git-mcp-btn').disabled = true;
@@ -1937,121 +2007,87 @@ function addMcp() {
     return;
   }
 
-  const name = serverNameInput.value.trim();
+  const name = serverNameInput.value;
   const type = serverTypeSelect.value;
-  const command = serverCommandInput.value.trim();
-  const url = serverUrlInput.value.trim();
+  const command = serverCommandInput.value;
+  const argsText = serverArgsInput.value;
+  const envText = serverEnvInput.value;
+  const url = serverUrlInput.value;
 
+  // 解析参数
+  const args = argsText.split('\n').filter(arg => arg.trim().length > 0);
+
+  // 解析环境变量
+  let env = {};
+  if (envText.trim()) {
+    try {
+      env = JSON.parse(envText);
+    } catch (error) {
+      // 尝试解析简单的KEY=VALUE格式
+      try {
+        env = {};
+        envText.split('\n').forEach(line => {
+          if (line.trim()) {
+            const [key, value] = line.split('=');
+            if (key && value) {
+              env[key.trim()] = value.trim();
+            }
+          }
+        });
+      } catch (e) {
+        console.error('解析环境变量失败:', e);
+        toastManager.showToast('环境变量格式无效', 'error');
+        return;
+      }
+    }
+  }
+
+  // 禁用按钮，防止重复提交
+  addMcpBtn.disabled = true;
+
+  // 创建MCP配置 - 使用旧格式，在mcpManager.addMcp中转换
   const payload = {
     sessionId,
     name,
     clientType: type,
   };
 
+  // 根据类型添加不同的参数
   if (type === 'stdio') {
-    // 确保命令存在
-    if (command) {
-      payload.command = command;
-    } else {
-      if (toastManager && typeof toastManager.showToast === 'function') {
-        toastManager.showToast('请输入命令', 'error');
-      }
-      return;
-    }
-
-    // 解析参数（每行一个）
-    const argsText = serverArgsInput.value.trim();
-    if (argsText) {
-      payload.args = argsText
-        .split('\n')
-        .map(arg => arg.trim())
-        .filter(arg => arg);
-    } else {
-      payload.args = [];
-    }
-
-    // 解析环境变量（键值对）
-    const envText = serverEnvInput.value.trim();
-    if (envText) {
-      payload.env = {};
-      envText.split('\n').forEach(line => {
-        const trimmedLine = line.trim();
-        if (trimmedLine && trimmedLine.includes('=')) {
-          const [key, ...valueParts] = trimmedLine.split('=');
-          payload.env[key.trim()] = valueParts.join('=').trim();
-        }
-      });
-    }
-
-    // 添加setup字段，用于Python MCP预设
-    if (name === 'python-fetch' || name.startsWith('python-')) {
-      payload.setup = {
-        command: 'pip',
-        args: ['install', 'mcp-server-fetch'],
-        description: '安装mcp-server-fetch包',
-      };
-    }
-
-    // 打印表单值和解析后的数据
-    console.log('表单值:', {
-      command: serverCommandInput.value,
-      args: serverArgsInput.value,
-      env: serverEnvInput.value,
-    });
-
-    console.log('解析后的参数:', payload.args);
-    if (payload.env) {
-      console.log('解析后的环境变量:', payload.env);
-    }
-    if (payload.setup) {
-      console.log('安装步骤:', payload.setup);
-    }
-  } else {
+    payload.command = command;
+    payload.args = args;
+    payload.env = env;
+    payload.description = `${name} MCP`;
+  } else if (type === 'sse') {
     payload.url = url;
+    payload.description = `${name} SSE服务`;
   }
 
-  // 显示加载状态
-  addMcpBtn.disabled = true;
-  if (toastManager && typeof toastManager.showToast === 'function') {
-    toastManager.showToast('正在添加MCP...', 'info');
-  }
+  // 发送请求
+  mcpManager
+    .addMcp(payload)
+    .then(data => {
+      console.log('MCP添加成功:', data);
+      toastManager.showToast(`MCP ${name} 添加成功`, 'success');
 
-  console.log('准备发送的 payload:', JSON.stringify(payload, null, 2));
+      // 清空表单
+      serverNameInput.value = '';
+      serverCommandInput.value = '';
+      serverArgsInput.value = '';
+      serverEnvInput.value = '';
+      serverUrlInput.value = '';
 
-  if (mcpManager && typeof mcpManager.addMcp === 'function') {
-    mcpManager
-      .addMcp(payload)
-      .then(mcp => {
-        // 重置表单
-        resetForm();
-
-        // 确保MCP列表已更新并渲染后再切换标签页
-        setTimeout(() => {
-          // 切换到列表标签页
-          try {
-            switchTab('list-mcp');
-          } catch (e) {
-            console.error('切换到MCP列表标签页失败:', e);
-          }
-        }, 100);
-
-        if (toastManager && typeof toastManager.showToast === 'function') {
-          toastManager.showToast('MCP已添加', 'success');
-        }
-      })
-      .catch(error => {
-        console.error('添加MCP失败:', error);
-        if (toastManager && typeof toastManager.showToast === 'function') {
-          toastManager.showToast('添加MCP失败: ' + error.message, 'error');
-        }
-      })
-      .finally(() => {
-        addMcpBtn.disabled = false;
-      });
-  } else {
-    console.error('无法添加MCP: mcpManager不可用');
-    addMcpBtn.disabled = false;
-  }
+      // 切换到列表标签页
+      switchTab('list-mcp');
+    })
+    .catch(error => {
+      console.error('添加MCP失败:', error);
+      toastManager.showToast(`添加MCP失败: ${error.message}`, 'error');
+    })
+    .finally(() => {
+      // 重新启用按钮
+      addMcpBtn.disabled = false;
+    });
 }
 
 // 重置表单
@@ -2154,11 +2190,13 @@ function connectWebSocket() {
   }
 
   try {
+    // 使用同样的路径创建socket连接
     socket = io();
 
     socket.on('connect', () => {
       console.log('WebSocket已连接');
-      socket.emit('join_session', sessionId);
+      // 发送加入会话请求，包含sessionId
+      socket.emit('join_session', { sessionId: sessionId });
     });
 
     socket.on('mcp_connected', mcp => {
@@ -2621,44 +2659,42 @@ function loadAllMcpInstances() {
 // 连接到已有的MCP实例
 function connectToInstance(instanceId, instanceName) {
   if (!sessionId) {
-    toastManager.showToast('无法连接实例: 没有活动会话', 'error');
-    return;
+    toastManager.showToast('会话无效，无法连接到实例', 'error');
+    return Promise.reject('会话无效');
   }
 
-  toastManager.showToast(`正在连接到实例: ${instanceName}...`, 'info');
+  toastManager.showToast(`正在连接到实例 ${instanceName}...`, 'info');
 
-  fetch(`${API_BASE_URL}/mcp/connect-instance`, {
+  return fetch(`${API_BASE_URL}/proxy/connect`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      'X-Session-ID': sessionId,
     },
     body: JSON.stringify({
-      sessionId,
       instanceId,
     }),
   })
-    .then(response => response.json())
+    .then(response => {
+      if (!response.ok) {
+        throw new Error(`连接实例失败: ${response.status} ${response.statusText}`);
+      }
+      return response.json();
+    })
     .then(data => {
       if (data.success) {
-        toastManager.showToast(`已连接到实例: ${instanceName}`, 'success');
-
-        // 刷新MCP列表
-        mcpManager
-          .loadMcpList()
-          .then(() => {
-            // 刷新实例列表
-            loadAllMcpInstances();
-          })
-          .catch(error => {
-            console.error('刷新MCP列表失败:', error);
-          });
+        toastManager.showToast(`已成功连接到实例 ${instanceName}`, 'success');
+        mcpList.push(data.mcp);
+        renderMcpList();
+        eventBus.emit('mcp-updated', mcpList);
+        return true;
       } else {
         throw new Error(data.error || '连接实例失败');
       }
     })
     .catch(error => {
-      console.error('连接实例失败:', error);
       toastManager.showToast(`连接实例失败: ${error.message}`, 'error');
+      return false;
     });
 }
 
@@ -2893,22 +2929,30 @@ function callMcpTool(mcpName, toolName, params) {
   console.log(`尝试调用MCP工具: ${mcpName}.${toolName}`, params);
 
   if (!sessionId) {
-    console.error('无法调用MCP工具: 会话ID不存在');
-    return Promise.reject(new Error('未连接会话'));
+    toastManager.showToast('会话无效，无法调用工具', 'error');
+    return Promise.reject(new Error('会话无效'));
   }
 
-  return fetch(`${API_BASE_URL}/mcp/call`, {
+  return fetch(`${API_BASE_URL}/sessions/${sessionId}/tools`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      'X-Session-ID': sessionId,
     },
     body: JSON.stringify({
-      sessionId,
       mcpName,
-      tool: toolName,
+      toolName,
       params,
     }),
-  }).then(response => response.json());
+  })
+    .then(response => response.json())
+    .then(data => {
+      if (data.success) {
+        return data.result;
+      } else {
+        throw new Error(data.error || '调用工具失败');
+      }
+    });
 }
 
 // 显示工具对话框
@@ -3091,14 +3135,16 @@ function handlePresetSelect() {
     const preset = MCP_PRESETS[selectedPreset];
     console.log('已选择预设:', preset);
 
-    // 将预设转换为JSON配置格式
+    // 将预设转换为JSON配置格式，使用config对象包装命令参数
     try {
       const jsonConfig = {
         mcpServers: {
           [preset.name]: {
-            command: preset.command,
-            args: preset.args,
-            env: preset.env,
+            config: {
+              command: preset.command,
+              args: preset.args,
+              env: preset.env,
+            },
           },
         },
       };
@@ -3407,15 +3453,35 @@ function handleConfigParse() {
 
     if (mcpManager && typeof mcpManager.addMcp === 'function') {
       for (const [name, mcpConfig] of Object.entries(config.mcpServers)) {
-        const payload = {
-          sessionId,
-          name,
-          clientType: 'stdio',
-          command: mcpConfig.command,
-          args: Array.isArray(mcpConfig.args) ? mcpConfig.args : [],
-          env: mcpConfig.env || {},
-        };
+        // 检查是否已经使用新格式（包含config对象）
+        const hasConfigObject = mcpConfig.config && typeof mcpConfig.config === 'object';
 
+        // 如果是新格式，直接使用；否则，构建config对象
+        let payload;
+
+        if (hasConfigObject) {
+          // 新格式
+          payload = {
+            sessionId,
+            name,
+            clientType: mcpConfig.clientType || 'stdio',
+            config: mcpConfig.config,
+          };
+        } else {
+          // 旧格式，需转换
+          payload = {
+            sessionId,
+            name,
+            clientType: 'stdio',
+            command: mcpConfig.command,
+            args: mcpConfig.args,
+            description: mcpConfig.description,
+            setup: mcpConfig.setup,
+            env: mcpConfig.env,
+          };
+        }
+
+        console.log(`准备添加MCP ${name}:`, payload);
         mcpPromises.push(mcpManager.addMcp(payload));
       }
 
@@ -3457,3 +3523,137 @@ window.loadAllMcpInstances = loadAllMcpInstances;
 window.connectToInstance = connectToInstance;
 window.reconnectMcp = reconnectMcp;
 window.deleteMcp = deleteMcp;
+
+// 添加帮助函数，专门转换GitHub案例和Python案例的入参
+function fixExamplePayloads() {
+  // 示例1 - Git MCP
+  const gitExample = {
+    sessionId: 'cd9638fe-3ba9-4372-a61e-4a95345a2592',
+    name: 'git-mcp',
+    clientType: 'stdio',
+    command: 'sh',
+    args: ['run.sh'],
+    setup: {
+      command: 'git',
+      args: ['clone', 'git@git.woa.com:abwu/external-mcp.git', '.'],
+      description: '克隆Git仓库',
+    },
+  };
+
+  // 转换为新格式
+  const fixedGitExample = {
+    name: 'git-mcp',
+    clientType: 'stdio',
+    config: {
+      command: 'sh',
+      args: ['run.sh'],
+      description: 'Git仓库MCP服务',
+      setup: {
+        command: 'git',
+        args: ['clone', 'git@git.woa.com:abwu/external-mcp.git', '.'],
+        description: '克隆Git仓库',
+      },
+    },
+  };
+
+  // 示例2 - Python MCP
+  const pythonExample = {
+    sessionId: 'cd9638fe-3ba9-4372-a61e-4a95345a2592',
+    name: 'python-fetch',
+    clientType: 'stdio',
+    command: '/opt/homebrew/bin/python3',
+    args: ['-m', 'mcp_server_fetch'],
+    setup: {
+      command: '/opt/homebrew/bin/python3',
+      args: ['-m', 'pip', 'install', 'mcp-server-fetch'],
+      description: '安装mcp-server-fetch包',
+    },
+  };
+
+  // 转换为新格式
+  const fixedPythonExample = {
+    name: 'python-fetch',
+    clientType: 'stdio',
+    config: {
+      command: '/opt/homebrew/bin/python3',
+      args: ['-m', 'mcp_server_fetch'],
+      description: 'Python MCP服务器',
+      setup: {
+        command: '/opt/homebrew/bin/python3',
+        args: ['-m', 'pip', 'install', 'mcp-server-fetch'],
+        description: '安装mcp-server-fetch包',
+      },
+    },
+  };
+
+  // 原始的mcpServers配置格式(完整示例)
+  const originalMcpServersFormat = {
+    mcpServers: {
+      'git-mcp': {
+        command: 'sh',
+        args: ['run.sh'],
+        description: 'Git仓库MCP服务',
+        setup: {
+          command: 'git',
+          args: ['clone', 'git@git.woa.com:abwu/external-mcp.git', '.'],
+          description: '克隆Git仓库',
+        },
+      },
+      'python-fetch': {
+        command: '/opt/homebrew/bin/python3',
+        args: ['-m', 'mcp_server_fetch'],
+        description: 'Python MCP服务器',
+        setup: {
+          command: '/opt/homebrew/bin/python3',
+          args: ['-m', 'pip', 'install', 'mcp-server-fetch'],
+          description: '安装mcp-server-fetch包',
+        },
+      },
+    },
+  };
+
+  console.log('新接口格式 - Git MCP示例:', JSON.stringify(fixedGitExample, null, 2));
+  console.log('新接口格式 - Python MCP示例:', JSON.stringify(fixedPythonExample, null, 2));
+  console.log('原始mcpServers配置格式:', JSON.stringify(originalMcpServersFormat, null, 2));
+
+  return {
+    git: fixedGitExample,
+    python: fixedPythonExample,
+    mcpServers: originalMcpServersFormat,
+  };
+}
+
+// 在适当的地方调用此函数，例如在初始化时
+document.addEventListener('DOMContentLoaded', function () {
+  // 其他初始化代码...
+
+  // 添加示例转换按钮，方便用户查看正确格式
+  const exampleBtn = document.createElement('button');
+  exampleBtn.id = 'show-example-btn';
+  exampleBtn.className = 'btn';
+  exampleBtn.textContent = '显示正确的入参示例';
+  exampleBtn.onclick = function () {
+    const examples = fixExamplePayloads();
+    const configJsonInput = document.getElementById('config-json');
+    if (configJsonInput) {
+      configJsonInput.value = JSON.stringify(
+        {
+          originalFormat: examples.mcpServers,
+          newApiFormat: {
+            gitExample: examples.git,
+            pythonExample: examples.python,
+          },
+        },
+        null,
+        2,
+      );
+    }
+    toastManager.showToast('已显示正确格式的示例', 'info');
+  };
+
+  // 将按钮添加到适当位置
+  const jsonTools = document.querySelector('.json-tools');
+  if (jsonTools) {
+    jsonTools.appendChild(exampleBtn);
+  }
+});
