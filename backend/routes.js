@@ -4,6 +4,7 @@ const express = require('express');
 const sessionController = require('./controllers/session-controller');
 const chatController = require('./controllers/chat-controller');
 const mcpController = require('./controllers/mcp-controller');
+const lifecycleController = require('./controllers/lifecycle-controller');
 
 // 会话验证中间件
 const validateSession = (req, res, next) => {
@@ -41,10 +42,14 @@ function setupRoutes(app) {
   app.post('/api/sessions/:sessionId/mcp', validateSession, mcpController.connectMcp);
   app.delete('/api/sessions/:sessionId/mcp', validateSession, mcpController.disconnectMcp);
   app.get('/api/sessions/:sessionId/mcp', validateSession, mcpController.getSessionMcps);
+  app.post('/api/mcp/connect-instance', mcpController.connectToInstance);
   app.get('/api/mcp/instances', mcpController.getAllInstances);
   app.get('/api/mcp/instances/:instanceId', mcpController.getInstanceDetail);
   app.get('/api/mcp/stats', mcpController.getPoolStats);
   app.post('/api/mcp/diagnose', mcpController.diagnoseMcpCommand);
+
+  // 生命周期管理路由
+  app.post('/api/lifecycle/cleanup', lifecycleController.cleanupIdleInstances);
 
   // 代理路由在app.js中单独配置
 

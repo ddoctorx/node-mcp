@@ -11,10 +11,10 @@ const fs = require('fs');
 // 从MCP进程获取工具列表
 async function getToolsFromProcess(childProcess) {
   return new Promise((resolve, reject) => {
-    // 设置超时
+    // 设置超时 - 增加到30秒
     const timeout = setTimeout(() => {
       reject(new Error('获取工具列表超时'));
-    }, 20000);
+    }, 30000); // 从20秒增加到30秒
 
     let buffer = '';
     let errorBuffer = '';
@@ -95,6 +95,44 @@ async function getToolsFromProcess(childProcess) {
               resolve(response.tools);
               return;
             }
+
+            // 兼容性检查：某些MCP可能不完全遵循JSON-RPC协议
+            if (response.methods || response.functions) {
+              logger.info(`检测到兼容性格式的工具列表`);
+
+              let compatTools = [];
+              // 处理methods格式
+              if (Array.isArray(response.methods)) {
+                compatTools = response.methods.map(method => ({
+                  name: method.name || method,
+                  description: method.description || `${method.name || method} tool`,
+                  parameters: method.parameters || {},
+                }));
+              }
+              // 处理functions格式
+              else if (Array.isArray(response.functions)) {
+                compatTools = response.functions.map(func => ({
+                  name: func.name || func,
+                  description: func.description || `${func.name || func} tool`,
+                  parameters: func.parameters || {},
+                }));
+              }
+
+              if (compatTools.length > 0) {
+                toolsReceived = true;
+                clearTimeout(timeout);
+
+                // 彻底清理所有事件监听器
+                childProcess.stdout.removeAllListeners('data');
+                childProcess.stderr.removeAllListeners('data');
+                childProcess.removeAllListeners('error');
+                childProcess.removeAllListeners('exit');
+
+                logger.info(`成功获取兼容性工具列表:`, compatTools);
+                resolve(compatTools);
+                return;
+              }
+            }
           } catch (lineError) {
             logger.debug(`尝试解析行失败: ${line}`);
           }
@@ -170,6 +208,22 @@ async function getToolsFromProcess(childProcess) {
         }
       }
     }, 2000); // 给进程2秒时间启动
+
+    // 如果在更长时间后仍未收到工具列表，尝试获取空工具列表来避免超时
+    setTimeout(() => {
+      if (!toolsReceived) {
+        logger.warn('工具列表获取时间过长，尝试返回空工具列表');
+        toolsReceived = true;
+        clearTimeout(timeout);
+
+        // 清理事件监听器
+        childProcess.stdout.removeListener('data', dataHandler);
+        childProcess.stderr.removeListener('data', errorHandler);
+
+        // 返回空工具列表
+        resolve([]);
+      }
+    }, 25000); // 在25秒后如果仍未获取到工具列表，返回空列表
   });
 }
 
@@ -184,8 +238,24 @@ async function callRemoteMcpTool(mcpSession, toolName, params) {
       return reject(new Error('无效的MCP会话'));
     }
 
+    // 增强对进程对象的检查
     if (!mcpSession.process) {
-      logger.error(`MCP会话没有有效的进程对象`);
+      // 尝试记录更详细的错误信息以便调试
+      logger.error(`MCP会话没有有效的进程对象`, {
+        mcpSessionInfo: {
+          clientType: mcpSession.clientType || 'unknown',
+          status: mcpSession.status || 'unknown',
+          hasTools: Array.isArray(mcpSession.tools) && mcpSession.tools.length > 0,
+          isExternal: mcpSession.isExternal || false,
+          command: mcpSession.command || 'none',
+        },
+      });
+
+      if (mcpSession.clientType === 'sse') {
+        // 如果是SSE类型，提示使用不同的调用方法
+        return reject(new Error('SSE类型的MCP会话不能使用stdio调用方法，请检查MCP配置'));
+      }
+
       return reject(new Error('MCP会话没有有效的进程对象'));
     }
 
@@ -398,6 +468,40 @@ async function createMcpProcess(config, instanceId) {
   }
 
   try {
+    // 命令白名单检查
+    const allowedExecutables = [
+      'node',
+      'npm',
+      'npx',
+      'python',
+      'python3',
+      'docker',
+      'uvx',
+      'pip',
+      'pip3',
+      'git',
+      'sh',
+      'bash',
+      'python3.11',
+      'python3.12',
+      'python3.13',
+      'python3.10',
+      'python3.9',
+      'python3.8',
+    ];
+
+    // 获取基础命令名（不含路径）
+    const baseCmd = config.command.split('/').pop().split('\\').pop();
+
+    // 允许直接执行js文件
+    if (!allowedExecutables.includes(baseCmd) && !baseCmd.endsWith('.js')) {
+      logger.error(`命令不在允许列表中: ${baseCmd}`);
+      return {
+        success: false,
+        error: `命令 ${baseCmd} 不在允许的列表中。允许的命令: ${allowedExecutables.join(', ')}`,
+      };
+    }
+
     // 准备启动进程
     const args = config.args || [];
 
@@ -406,13 +510,28 @@ async function createMcpProcess(config, instanceId) {
       ...process.env, // 包含默认环境变量
       ...config.env, // 添加配置的环境变量
       MCP_INSTANCE_ID: instanceId, // 注入实例ID
+      PATH: process.env.PATH, // 确保PATH环境变量被正确传递
     };
 
-    // 启动子进程
-    const childProcess = spawn(config.command, args, {
+    // 设置spawn选项
+    const spawnOptions = {
       env,
       stdio: ['pipe', 'pipe', 'pipe'], // stdin, stdout, stderr
-    });
+      shell: true, // 始终使用shell执行命令
+    };
+
+    // 如果配置中指定了工作目录，则使用它
+    if (config.workingDir) {
+      logger.info(`使用工作目录: ${config.workingDir}`);
+      spawnOptions.cwd = config.workingDir;
+    }
+
+    // 启动子进程
+    logger.info(`启动子进程: ${config.command} ${args.join(' ')}`);
+    const childProcess = spawn(config.command, args, spawnOptions);
+
+    // 记录进程PID
+    logger.info(`MCP进程已启动，PID: ${childProcess.pid}, 实例ID: ${instanceId}`);
 
     // 退出事件处理
     childProcess.on('exit', (code, signal) => {
@@ -424,7 +543,16 @@ async function createMcpProcess(config, instanceId) {
       logger.error(`MCP进程错误，实例ID: ${instanceId}`, { error: error.message });
     });
 
-    // 非阻塞方式获取工具列表
+    // 调试输出
+    childProcess.stdout.on('data', data => {
+      logger.debug(`MCP[${instanceId}] stdout: ${data.toString().trim()}`);
+    });
+
+    childProcess.stderr.on('data', data => {
+      logger.debug(`MCP[${instanceId}] stderr: ${data.toString().trim()}`);
+    });
+
+    // 增加工具列表获取超时时间
     logger.info(`开始从进程获取工具列表，实例ID: ${instanceId}`);
     const tools = await getToolsFromProcess(childProcess);
     logger.info(`获取工具列表成功，工具数量: ${tools.length}, 实例ID: ${instanceId}`);
@@ -437,9 +565,10 @@ async function createMcpProcess(config, instanceId) {
         command: config.command,
         args: config.args || [],
         env: config.env || {},
+        workingDir: config.workingDir,
         process: childProcess,
         tools: tools || [],
-        status: 'ready',
+        status: 'connected',
       },
     };
   } catch (error) {
@@ -517,201 +646,381 @@ async function createStdioMcpFactory(config, instanceId) {
       );
 
       try {
-        // 创建一个临时目录用于MCP进程
-        const tmpDir = path.join(os.tmpdir(), `mcp-${instanceId}`);
-        logger.info(`为MCP实例创建临时目录: ${tmpDir}`);
+        // 检查setup命令是否存在
+        let setupCommand = config.setup.command;
+        let setupArgs = config.setup.args || [];
+        let useVirtualEnv = false;
+        let venvPath = '';
 
-        if (!fs.existsSync(tmpDir)) {
-          fs.mkdirSync(tmpDir, { recursive: true });
+        // 为Git仓库创建工作目录
+        let workingDir = null;
+        if (setupCommand === 'git' && setupArgs.includes('clone')) {
+          logger.info(`检测到Git克隆操作，将创建工作目录`);
+
+          try {
+            // 为每个仓库实例创建唯一的工作目录
+            const reposBasePath = path.join(__dirname, '../../repos');
+
+            // 确保基础目录存在
+            if (!fs.existsSync(reposBasePath)) {
+              fs.mkdirSync(reposBasePath, { recursive: true });
+            }
+
+            // 使用实例ID创建唯一的仓库目录
+            workingDir = path.join(reposBasePath, instanceId);
+            logger.info(`创建Git仓库工作目录: ${workingDir}`);
+
+            // 创建目录
+            fs.mkdirSync(workingDir, { recursive: true });
+
+            // 修改运行命令的工作目录
+            config.workingDir = workingDir;
+            logger.info(`将设置MCP命令工作目录为: ${workingDir}`);
+          } catch (dirError) {
+            logger.error(`创建仓库工作目录失败: ${dirError.message}`);
+            return {
+              success: false,
+              error: `创建仓库工作目录失败: ${dirError.message}`,
+            };
+          }
         }
 
-        // 执行setup命令
-        const setupProcess = spawn(config.setup.command, config.setup.args || [], {
-          cwd: tmpDir,
-          env: { ...process.env, ...(config.env || {}) },
-          shell: true, // 使用shell执行命令，这样可以使用PATH环境变量
-        });
+        // 特殊情况: 当Python或pip命令不可用时尝试替代方案
+        if (
+          !setupCommand ||
+          setupCommand === 'pip' ||
+          setupCommand === 'pip3' ||
+          setupCommand === 'python' ||
+          setupCommand === 'python3'
+        ) {
+          try {
+            logger.info(`验证${setupCommand}命令是否可用`);
+            // 根据不同操作系统使用不同的命令检查
+            const isWindows = process.platform === 'win32';
+            const checkCommand = isWindows ? 'where' : 'which';
 
-        // 收集setup输出以便调试
-        let setupOutput = '';
-        let setupErrorOutput = '';
-
-        setupProcess.stdout.on('data', data => {
-          const output = data.toString();
-          setupOutput += output;
-          logger.debug(`Setup stdout: ${output}`);
-        });
-
-        setupProcess.stderr.on('data', data => {
-          const errorOutput = data.toString();
-          setupErrorOutput += errorOutput;
-          logger.debug(`Setup stderr: ${errorOutput}`);
-        });
-
-        // 等待setup完成
-        const setupResult = await new Promise((resolve, reject) => {
-          setupProcess.on('close', code => {
-            if (code === 0) {
-              logger.info(`Setup命令成功完成`);
-              resolve({ success: true });
-            } else {
-              logger.error(`Setup命令失败，退出码: ${code}`, {
-                output: setupOutput,
-                errorOutput: setupErrorOutput,
+            const whichPipProcess = spawn(checkCommand, [setupCommand]);
+            const pipPath = await new Promise((resolve, reject) => {
+              let output = '';
+              whichPipProcess.stdout.on('data', data => {
+                output += data.toString().trim();
               });
-              reject(
-                new Error(
-                  `Setup命令失败，退出码: ${code}\n输出: ${setupOutput}\n错误: ${setupErrorOutput}`,
-                ),
-              );
+              whichPipProcess.on('close', code => {
+                if (code === 0 && output) {
+                  resolve(output);
+                } else {
+                  reject(new Error(`${setupCommand}命令不可用，退出码: ${code}`));
+                }
+              });
+              whichPipProcess.on('error', err => {
+                reject(err);
+              });
+            });
+
+            if (pipPath) {
+              logger.info(`找到${setupCommand}命令路径: ${pipPath}`);
+            }
+          } catch (pipCheckError) {
+            logger.warn(`${setupCommand}命令不可用，尝试使用替代方案`, {
+              error: pipCheckError.message,
+            });
+
+            // 尝试通过which命令查找可能的Python路径
+            try {
+              // 尝试常见的Homebrew Python路径
+              const homebrewPythonPaths = [
+                '/opt/homebrew/bin/python3',
+                '/opt/homebrew/opt/python/bin/python3',
+                '/opt/homebrew/opt/python@3/bin/python3',
+                '/usr/local/bin/python3',
+                '/usr/bin/python3',
+              ];
+
+              // 检测macOS上的Homebrew Python
+              if (process.platform === 'darwin') {
+                for (const pythonPath of homebrewPythonPaths) {
+                  try {
+                    await fs.promises.access(pythonPath, fs.constants.X_OK);
+                    logger.info(`找到可用的Python路径: ${pythonPath}`);
+
+                    // 如果是pip命令，转换为使用Python -m pip
+                    if (setupCommand === 'pip' || setupCommand === 'pip3') {
+                      setupCommand = pythonPath;
+                      setupArgs = ['-m', 'pip', ...setupArgs];
+                      logger.info(`已转换为使用: ${setupCommand} ${setupArgs.join(' ')}`);
+                      break;
+                    }
+                    // 如果是python命令，直接使用找到的Python
+                    else if (setupCommand === 'python' || setupCommand === 'python3') {
+                      setupCommand = pythonPath;
+                      logger.info(`已转换为使用: ${setupCommand}`);
+                      break;
+                    }
+                  } catch (err) {
+                    // 路径不存在或不可执行，继续尝试下一个
+                    logger.debug(`Python路径不可用: ${pythonPath}`);
+                  }
+                }
+              }
+
+              // 如果都找不到，使用config.command（主命令）
+              if ((setupCommand === 'pip' || setupCommand === 'pip3') && config.command) {
+                setupCommand = config.command;
+                setupArgs = ['-m', 'pip', ...setupArgs];
+                logger.info(`转为使用主命令: ${setupCommand} ${setupArgs.join(' ')}`);
+              }
+            } catch (pathCheckError) {
+              logger.error(`查找Python路径失败`, { error: pathCheckError.message });
+            }
+          }
+        }
+
+        // 在macOS上自动使用虚拟环境（解决externally-managed-environment问题）
+        if (
+          process.platform === 'darwin' &&
+          (setupArgs.includes('pip') || (setupArgs.includes('-m') && setupArgs.includes('pip')))
+        ) {
+          logger.info(`检测到macOS环境，将使用虚拟环境安装Python包`);
+
+          try {
+            // 为每个MCP实例创建唯一的虚拟环境路径
+            const venvBasePath = path.join(__dirname, '../../venvs');
+
+            // 确保目录存在
+            if (!fs.existsSync(venvBasePath)) {
+              fs.mkdirSync(venvBasePath, { recursive: true });
+            }
+
+            // 使用实例ID创建唯一的虚拟环境名称
+            venvPath = path.join(venvBasePath, instanceId);
+            logger.info(`将创建虚拟环境: ${venvPath}`);
+
+            // 1. 创建虚拟环境
+            logger.info(`开始创建Python虚拟环境...`);
+            const createVenvProcess = spawn(setupCommand, ['-m', 'venv', venvPath], {
+              shell: true, // 确保在所有平台上使用shell
+              env: { ...process.env },
+            });
+
+            await new Promise((resolve, reject) => {
+              let venvError = '';
+
+              createVenvProcess.stderr.on('data', data => {
+                venvError += data.toString();
+                logger.error(`创建虚拟环境错误: ${data.toString().trim()}`);
+              });
+
+              createVenvProcess.on('exit', code => {
+                if (code === 0) {
+                  logger.info(`虚拟环境创建成功: ${venvPath}`);
+                  resolve();
+                } else {
+                  logger.error(`虚拟环境创建失败，退出码: ${code}`);
+                  reject(new Error(`虚拟环境创建失败: ${venvError}`));
+                }
+              });
+
+              createVenvProcess.on('error', err => {
+                logger.error(`虚拟环境创建进程错误: ${err.message}`);
+                reject(err);
+              });
+            });
+
+            // 2. 确定虚拟环境中的Python解释器路径
+            const isWindows = process.platform === 'win32';
+            const venvPythonPath = isWindows
+              ? path.join(venvPath, 'Scripts', 'python.exe')
+              : path.join(venvPath, 'bin', 'python');
+
+            logger.info(`虚拟环境Python解释器路径: ${venvPythonPath}`);
+
+            // 3. 使用虚拟环境中的pip安装包
+            const originalSetupArgs = [...setupArgs];
+
+            // 修改安装命令，使用虚拟环境中的Python
+            setupCommand = venvPythonPath;
+
+            // 如果安装命令是python -m pip install xxx，保持这种格式
+            if (originalSetupArgs.includes('-m') && originalSetupArgs.includes('pip')) {
+              // 保持原来的参数不变，因为我们已经修改了setupCommand指向虚拟环境的Python
+            } else {
+              // 否则重构为使用pip模块
+              const packageIndex = originalSetupArgs.indexOf('install') + 1;
+              setupArgs = ['-m', 'pip', 'install'];
+
+              if (packageIndex > 0 && packageIndex < originalSetupArgs.length) {
+                setupArgs.push(originalSetupArgs[packageIndex]);
+              }
+            }
+
+            useVirtualEnv = true;
+            logger.info(`将使用虚拟环境安装包: ${setupCommand} ${setupArgs.join(' ')}`);
+          } catch (venvError) {
+            logger.error(`虚拟环境设置失败: ${venvError.message}`);
+            return {
+              success: false,
+              error: `虚拟环境设置失败: ${venvError.message}`,
+            };
+          }
+        }
+
+        // 执行安装命令
+        logger.info(`开始执行安装命令: ${setupCommand} ${setupArgs.join(' ')}`);
+
+        // 对于所有平台，始终使用shell执行命令
+        const spawnOptions = {
+          shell: true, // 确保在所有平台上使用shell
+          env: { ...process.env }, // 继承环境变量
+        };
+
+        // 如果设置了工作目录，添加到选项中
+        if (workingDir) {
+          spawnOptions.cwd = workingDir;
+          logger.info(`在工作目录 ${workingDir} 中执行安装命令`);
+        }
+
+        const setupProcess = spawn(setupCommand, setupArgs, spawnOptions);
+
+        return new Promise((resolve, reject) => {
+          let setupOutput = '';
+          let setupError = '';
+
+          setupProcess.stdout.on('data', data => {
+            setupOutput += data.toString();
+            logger.info(`安装输出: ${data.toString().trim()}`);
+          });
+
+          setupProcess.stderr.on('data', data => {
+            setupError += data.toString();
+            logger.error(`安装错误: ${data.toString().trim()}`);
+          });
+
+          setupProcess.on('error', error => {
+            logger.error(`安装进程错误: ${error.message}`, {
+              command: setupCommand,
+              args: setupArgs,
+              error: error.toString(),
+              code: error.code,
+              path: error.path,
+              syscall: error.syscall,
+            });
+
+            let helpfulMessage = `安装失败: ${error.message}. 请确保 ${setupCommand} 已安装并在PATH中.`;
+
+            // 添加macOS特定提示
+            if (process.platform === 'darwin' && error.code === 'ENOENT') {
+              helpfulMessage += `\n\n在macOS上，您可能需要使用Homebrew安装Python:\n`;
+              helpfulMessage += `brew install python3\n\n`;
+              helpfulMessage += `或者在前端页面中输入完整的Python路径，例如:\n`;
+              helpfulMessage += `/opt/homebrew/bin/python3 或 /usr/bin/python3`;
+            }
+
+            reject({
+              success: false,
+              error: helpfulMessage,
+            });
+          });
+
+          setupProcess.on('exit', code => {
+            if (code === 0) {
+              logger.info(`安装成功完成`, { command: setupCommand });
+              // 继续正常的MCP创建流程，如果使用虚拟环境，则使用虚拟环境中的Python
+              if (useVirtualEnv) {
+                // 修改主命令配置，使用虚拟环境中的解释器
+                const isWindows = process.platform === 'win32';
+                const venvPythonPath = isWindows
+                  ? path.join(venvPath, 'Scripts', 'python.exe')
+                  : path.join(venvPath, 'bin', 'python');
+
+                // 创建新的配置使用虚拟环境
+                const venvConfig = { ...config };
+                venvConfig.command = venvPythonPath;
+
+                logger.info(`使用虚拟环境中的Python执行MCP: ${venvPythonPath}`);
+                resolve(createMcpProcess(venvConfig, instanceId));
+              } else {
+                // 如果是Git克隆，确保传递工作目录
+                if (workingDir && setupCommand === 'git') {
+                  // 确保config中有workingDir
+                  if (!config.workingDir) {
+                    config.workingDir = workingDir;
+                  }
+                  logger.info(`Git克隆成功，将使用工作目录: ${workingDir}`);
+                }
+
+                resolve(createMcpProcess(config, instanceId));
+              }
+            } else {
+              logger.error(`安装失败，退出码: ${code}`, {
+                command: setupCommand,
+                output: setupOutput,
+                error: setupError,
+              });
+
+              // 尝试给出更具体的错误信息
+              let errorMessage = `安装失败，退出码: ${code}`;
+
+              if (setupError.includes('No module named pip')) {
+                errorMessage = `${setupCommand} 没有pip模块。请先安装pip`;
+              } else if (setupError.includes('not found') || code === 127) {
+                errorMessage = `找不到命令 ${setupCommand}。请确保它已安装并在PATH中`;
+              } else if (
+                setupOutput.includes('Permission denied') ||
+                setupError.includes('Permission denied')
+              ) {
+                errorMessage = `权限不足，无法安装。尝试使用管理员权限或添加 --user 标志`;
+              } else if (setupError.includes('externally-managed-environment')) {
+                errorMessage = `Python环境为外部管理环境，无法直接安装包。请使用虚拟环境或添加 --break-system-packages 标志`;
+                // 添加macOS提示
+                if (process.platform === 'darwin') {
+                  errorMessage += `\n\n请尝试使用以下命令创建虚拟环境:\n`;
+                  errorMessage += `python3 -m venv ./venv\n`;
+                  errorMessage += `source ./venv/bin/activate\n`;
+                  errorMessage += `pip install mcp-server-fetch`;
+                }
+              }
+
+              // 添加macOS提示
+              if (process.platform === 'darwin') {
+                errorMessage += `\n\n在macOS上，您可能需要使用Homebrew安装Python:\nbrew install python3\n`;
+                errorMessage += `或尝试在前端页面选择其他Python命令，例如：/opt/homebrew/bin/python3`;
+              }
+
+              reject({
+                success: false,
+                error: errorMessage + (setupError ? `\n错误信息: ${setupError}` : ''),
+              });
             }
           });
-
-          setupProcess.on('error', err => {
-            logger.error(`Setup命令执行错误`, { error: err.message });
-            reject(new Error(`Setup命令执行错误: ${err.message}`));
-          });
+        });
+      } catch (setupError) {
+        logger.error(`安装命令执行失败`, {
+          error: setupError.message,
+          stack: setupError.stack,
+          command: config.setup.command,
+          args: config.setup.args,
         });
 
-        logger.info(`Setup完成，准备创建主MCP进程`);
+        let errorMessage = `安装命令执行失败: ${setupError.message}. 可能原因: 1) 命令不存在 2) 权限不足 3) 网络问题`;
 
-        // 从临时目录创建主MCP进程
-        const mcpProcess = spawn(config.command, config.args || [], {
-          cwd: tmpDir,
-          env: { ...process.env, ...(config.env || {}) },
-          shell: true, // 使用shell执行命令
-        });
-
-        // 设置进程错误处理
-        mcpProcess.on('error', err => {
-          logger.error(`MCP进程启动错误`, { error: err.message });
-        });
-
-        // 收集初始化输出以便调试
-        let initialOutput = '';
-        let initialErrorOutput = '';
-
-        const dataHandler = data => {
-          const output = data.toString();
-          initialOutput += output;
-          logger.debug(`MCP初始化stdout: ${output}`);
-        };
-
-        const errorHandler = data => {
-          const errorOutput = data.toString();
-          initialErrorOutput += errorOutput;
-          logger.error(`MCP初始化stderr: ${errorOutput}`);
-        };
-
-        mcpProcess.stdout.on('data', dataHandler);
-        mcpProcess.stderr.on('data', errorHandler);
-
-        // 等待进程稳定
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
-        // 如果进程已退出，则报错
-        if (mcpProcess.exitCode !== null) {
-          throw new Error(
-            `MCP进程已退出，退出码: ${mcpProcess.exitCode}\n输出: ${initialOutput}\n错误: ${initialErrorOutput}`,
-          );
+        // 添加macOS提示
+        if (process.platform === 'darwin') {
+          errorMessage += `\n\n在macOS上，您可能需要选择正确的Python路径:\n`;
+          errorMessage += `- 如果使用Homebrew: /opt/homebrew/bin/python3\n`;
+          errorMessage += `- 或系统Python: /usr/bin/python3`;
         }
 
-        // 获取MCP服务的工具列表
-        logger.info(`尝试获取MCP工具列表`);
-        const tools = await getToolsFromProcess(mcpProcess);
-
-        // 创建MCP会话
-        const mcpSession = {
-          process: mcpProcess,
-          tools,
-          clientType: 'stdio',
-          status: 'connected',
-          command: config.command,
-          args: config.args || [],
-          env: config.env || {},
-          cwd: tmpDir,
-        };
-
         return {
-          success: true,
-          mcpSession,
+          success: false,
+          error: errorMessage,
         };
-      } catch (setupError) {
-        logger.error(`执行setup命令失败`, { error: setupError.message });
-        throw new Error(`执行setup命令失败: ${setupError.message}`);
       }
-    } else {
-      // 直接创建MCP进程（无setup）
-      logger.info(`未检测到setup配置，直接创建MCP进程`);
-
-      // 创建进程
-      const mcpProcess = spawn(config.command, config.args || [], {
-        env: { ...process.env, ...(config.env || {}) },
-        shell: true, // 使用shell执行命令
-      });
-
-      // 设置进程错误处理
-      mcpProcess.on('error', err => {
-        logger.error(`MCP进程启动错误`, { error: err.message });
-      });
-
-      // 收集初始化输出以便调试
-      let initialOutput = '';
-      let initialErrorOutput = '';
-
-      const dataHandler = data => {
-        const output = data.toString();
-        initialOutput += output;
-        logger.debug(`MCP初始化stdout: ${output}`);
-      };
-
-      const errorHandler = data => {
-        const errorOutput = data.toString();
-        initialErrorOutput += errorOutput;
-        logger.error(`MCP初始化stderr: ${errorOutput}`);
-      };
-
-      mcpProcess.stdout.on('data', dataHandler);
-      mcpProcess.stderr.on('data', errorHandler);
-
-      // 等待进程稳定
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-      // 如果进程已退出，则报错
-      if (mcpProcess.exitCode !== null) {
-        throw new Error(
-          `MCP进程已退出，退出码: ${mcpProcess.exitCode}\n输出: ${initialOutput}\n错误: ${initialErrorOutput}`,
-        );
-      }
-
-      // 获取MCP服务的工具列表
-      logger.info(`尝试获取MCP工具列表`);
-      const tools = await getToolsFromProcess(mcpProcess);
-
-      // 创建MCP会话
-      const mcpSession = {
-        process: mcpProcess,
-        tools,
-        clientType: 'stdio',
-        status: 'connected',
-        command: config.command,
-        args: config.args || [],
-        env: config.env || {},
-      };
-
-      return {
-        success: true,
-        mcpSession,
-      };
     }
-  } catch (error) {
-    logger.error(`创建MCP进程失败`, {
-      error: error.message,
-      command: config.command,
-      args: config.args,
-      setup: config.setup,
-    });
 
+    // 创建MCP进程
+    return createMcpProcess(config, instanceId);
+  } catch (error) {
+    logger.error(`创建MCP进程失败`, { error: error.message });
     return {
       success: false,
       error: `创建MCP进程失败: ${error.message}`,
@@ -738,7 +1047,7 @@ async function createSseMcpFactory(config, instanceId) {
         clientType: 'sse',
         url: config.url,
         tools: tools || [],
-        status: 'ready',
+        status: 'connected',
       },
     };
   } catch (error) {

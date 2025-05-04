@@ -79,7 +79,9 @@ const lifecycleController = lifecycleManager.init(
     return await mcpPool.removeMcpInstance(instanceId);
   },
 );
-logger.info('生命周期管理器已初始化', {
+// 将生命周期控制器保存到全局对象，供API路由使用
+global.lifecycleController = lifecycleController;
+logger.info('生命周期管理器已初始化并保存到全局对象', {
   checkInterval: '60秒',
   idleTimeout: '5分钟',
   autoCleanup: true,

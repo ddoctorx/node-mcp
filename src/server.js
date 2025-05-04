@@ -123,7 +123,8 @@ function createSession(userId) {
 
       // 将实例关联到新会话
       if (instance.mcpSession) {
-        sessions[sessionId].mcpSessions[instance.mcpSession.name] = {
+        // 创建MCP会话对象，保留所有必要的属性
+        const mcpSessionObj = {
           instanceId: instance.instanceId,
           name: instance.mcpSession.name,
           clientType: instance.mcpSession.clientType,
@@ -135,6 +136,18 @@ function createSession(userId) {
           url: instance.mcpSession.url,
           isExternal: instance.mcpSession.isExternal || true,
         };
+
+        // 针对不同类型的MCP添加特殊属性
+        if (instance.mcpSession.clientType === 'stdio' && instance.mcpSession.process) {
+          mcpSessionObj.process = instance.mcpSession.process;
+          logger.info(`已为实例[${instance.instanceId}]复制进程对象到会话[${sessionId}]`);
+        } else if (instance.mcpSession.clientType === 'sse') {
+          mcpSessionObj.heartbeatInterval = instance.mcpSession.heartbeatInterval;
+          mcpSessionObj.lastPingTime = instance.mcpSession.lastPingTime;
+        }
+
+        // 保存到会话
+        sessions[sessionId].mcpSessions[instance.mcpSession.name] = mcpSessionObj;
         registry.associateSessionWithInstance(sessionId, instance.instanceId);
       }
     });
@@ -1502,12 +1515,32 @@ app.post('/api/mcp', async (req, res) => {
       sessions[actualSessionId].mcpSessions = {};
     }
 
-    // 存储实例ID和名称的映射
-    sessions[actualSessionId].mcpSessions[name] = {
+    // 获取完整的实例详情，包括进程对象
+    const instanceDetail = registry.getInstanceDetail(poolResult.instanceId);
+
+    // 创建MCP会话对象，确保包含所有必要的属性
+    const mcpSessionObj = {
       instanceId: poolResult.instanceId,
       name: name,
       ...poolResult.mcp,
     };
+
+    // 从实例详情中添加特定类型必需的属性
+    if (instanceDetail && instanceDetail.mcpSession) {
+      // 对于stdio类型，确保添加process对象
+      if (instanceDetail.mcpSession.clientType === 'stdio' && instanceDetail.mcpSession.process) {
+        mcpSessionObj.process = instanceDetail.mcpSession.process;
+        logger.info(`为MCP ${name} 添加进程对象到会话 ${actualSessionId}`);
+      }
+      // 对于SSE类型，添加相关属性
+      else if (instanceDetail.mcpSession.clientType === 'sse') {
+        mcpSessionObj.heartbeatInterval = instanceDetail.mcpSession.heartbeatInterval;
+        mcpSessionObj.lastPingTime = instanceDetail.mcpSession.lastPingTime;
+      }
+    }
+
+    // 存储实例ID和名称的映射
+    sessions[actualSessionId].mcpSessions[name] = mcpSessionObj;
 
     // 通知所有连接的客户端
     io.to(actualSessionId).emit('mcp_connected', poolResult.mcp);
@@ -1561,7 +1594,27 @@ async function mcpToolAdapter(sessionId, mcpName, toolName, params) {
     throw error;
   }
 
-  const mcpSession = instanceDetail.mcpSession;
+  // 使用正确的mcpSession对象
+  // 优先使用会话中的mcpInfo（可能包含进程对象），如果没有，再使用实例详情中的mcpSession
+  const mcpSession = mcpInfo.process ? mcpInfo : instanceDetail.mcpSession;
+
+  // 额外的日志记录和验证
+  if (mcpSession.clientType === 'stdio' && !mcpSession.process) {
+    logger.error(`严重错误：无法找到进程对象，尝试使用实例详情`, {
+      sessionHasProcess: !!mcpInfo.process,
+      instanceHasProcess: !!instanceDetail.mcpSession.process,
+      mcpName,
+      sessionId,
+      instanceId,
+    });
+
+    // 如果会话中没有process但实例详情中有，则使用实例详情中的
+    if (instanceDetail.mcpSession.process) {
+      // 更新会话中的process对象以便后续使用
+      mcpInfo.process = instanceDetail.mcpSession.process;
+      logger.info(`从实例详情中恢复了进程对象到会话`);
+    }
+  }
 
   // 获取工具定义，以检查参数规范
   const toolDef = mcpSession.tools.find(t => t.name === toolName);
@@ -1702,7 +1755,9 @@ app.post('/api/mcp/call', async (req, res) => {
       if (foundMcp && foundInstance) {
         // 将实例关联到当前会话
         sessions[actualSessionId].mcpSessions = sessions[actualSessionId].mcpSessions || {};
-        sessions[actualSessionId].mcpSessions[mcpName] = {
+
+        // 创建MCP会话对象，确保保留所有必要的属性
+        const mcpSessionObj = {
           instanceId: foundInstance.instanceId,
           name: mcpName,
           clientType: foundInstance.mcpSession.clientType,
@@ -1714,6 +1769,18 @@ app.post('/api/mcp/call', async (req, res) => {
           url: foundInstance.mcpSession.url,
           isExternal: foundInstance.mcpSession.isExternal || true,
         };
+
+        // 根据客户端类型添加特定属性
+        if (foundInstance.mcpSession.clientType === 'stdio' && foundInstance.mcpSession.process) {
+          mcpSessionObj.process = foundInstance.mcpSession.process;
+          logger.info(`为MCP ${mcpName} 复制进程对象到会话 ${actualSessionId}`);
+        } else if (foundInstance.mcpSession.clientType === 'sse') {
+          mcpSessionObj.heartbeatInterval = foundInstance.mcpSession.heartbeatInterval;
+          mcpSessionObj.lastPingTime = foundInstance.mcpSession.lastPingTime;
+        }
+
+        // 保存到会话
+        sessions[actualSessionId].mcpSessions[mcpName] = mcpSessionObj;
 
         // 关联会话与实例
         registry.associateSessionWithInstance(actualSessionId, foundInstance.instanceId);
@@ -1749,7 +1816,21 @@ app.post('/api/mcp/call', async (req, res) => {
         // 将MCP从其他会话复制到当前会话
         const mcpInfo = sessions[foundSessionId].mcpSessions[mcpName];
         sessions[actualSessionId].mcpSessions = sessions[actualSessionId].mcpSessions || {};
-        sessions[actualSessionId].mcpSessions[mcpName] = { ...mcpInfo };
+
+        // 创建MCP会话对象，确保保留所有必要的属性
+        const mcpSessionObj = { ...mcpInfo }; // 先复制所有基本属性
+
+        // 针对不同类型的MCP复制特定属性
+        if (mcpInfo.clientType === 'stdio' && mcpInfo.process) {
+          // 特别确保process对象被正确复制
+          mcpSessionObj.process = mcpInfo.process;
+          logger.info(
+            `从会话 ${foundSessionId} 复制MCP ${mcpName} 的进程对象到会话 ${actualSessionId}`,
+          );
+        }
+
+        // 保存到会话
+        sessions[actualSessionId].mcpSessions[mcpName] = mcpSessionObj;
 
         // 如果有instanceId，关联会话与实例
         if (mcpInfo.instanceId) {

@@ -24,10 +24,56 @@ async function mcpToolAdapter(sessionId, mcpName, toolName, params) {
       throw new Error(`MCP不存在: ${mcpName}`);
     }
 
+    // 检查MCP状态
+    if (mcpSession.status !== 'connected') {
+      logger.error(`MCP状态异常，无法调用工具`, {
+        sessionId,
+        mcpName,
+        status: mcpSession.status || 'unknown',
+      });
+      throw new Error(
+        `MCP未连接或状态异常: ${mcpName}, 当前状态: ${mcpSession.status || 'unknown'}`,
+      );
+    }
+
     // 检查工具是否存在
     const toolExists = mcpSession.tools && mcpSession.tools.some(tool => tool.name === toolName);
     if (!toolExists) {
       throw new Error(`工具不存在: ${toolName}`);
+    }
+
+    // 针对stdio类型，预先验证process对象
+    if (mcpSession.clientType === 'stdio' && !mcpSession.process) {
+      logger.error(`stdio类型MCP缺少有效进程对象`, {
+        sessionId,
+        mcpName,
+        mcpInfo: {
+          clientType: mcpSession.clientType,
+          status: mcpSession.status,
+          hasTools: mcpSession.tools ? mcpSession.tools.length : 0,
+        },
+      });
+
+      // 增强：尝试从注册表获取进程对象
+      if (mcpSession.instanceId) {
+        const registry = require('../core/registry');
+        const instance = registry.getInstanceDetail(mcpSession.instanceId);
+
+        if (instance && instance.mcpSession && instance.mcpSession.process) {
+          logger.info(`从注册表恢复进程对象到会话 ${sessionId} 的MCP ${mcpName}`);
+          mcpSession.process = instance.mcpSession.process;
+        } else {
+          logger.error(`无法从注册表获取进程对象`, {
+            sessionId,
+            mcpName,
+            instanceId: mcpSession.instanceId,
+            hasInstance: !!instance,
+          });
+          throw new Error(`MCP会话没有有效的进程对象: ${mcpName}`);
+        }
+      } else {
+        throw new Error(`MCP会话没有有效的进程对象: ${mcpName}`);
+      }
     }
 
     let result;

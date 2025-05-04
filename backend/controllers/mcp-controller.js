@@ -319,6 +319,104 @@ async function diagnoseMcpCommand(req, res) {
   }
 }
 
+// 连接到已有的MCP实例
+async function connectToInstance(req, res) {
+  try {
+    const { sessionId, instanceId } = req.body;
+    logger.info(`接收到连接实例请求`, { sessionId, instanceId });
+
+    if (!sessionId || !instanceId) {
+      logger.error(`连接实例请求缺少必要参数`, { sessionId, instanceId });
+      return res.status(400).json({
+        success: false,
+        error: '缺少必要参数: sessionId或instanceId',
+      });
+    }
+
+    // 获取mcpPool全局实例
+    const mcpPool = getMcpPool();
+    if (!mcpPool) {
+      return res.status(500).json({
+        success: false,
+        error: 'MCP池服务未正确初始化',
+      });
+    }
+
+    // 获取实例详情
+    const instance = registry.getInstanceDetail(instanceId);
+    logger.info(`查询实例详情`, { instanceId, found: !!instance });
+
+    if (!instance) {
+      logger.error(`找不到指定ID的实例`, { instanceId });
+      return res.status(404).json({
+        success: false,
+        error: `找不到指定ID的实例: ${instanceId}`,
+      });
+    }
+
+    // 检查会话是否存在
+    const session = sessionManager.getSession(sessionId);
+    if (!session) {
+      logger.error(`会话不存在`, { sessionId });
+      return res.status(404).json({
+        success: false,
+        error: `会话不存在: ${sessionId}`,
+      });
+    }
+
+    // 关联会话和实例
+    const associationResult = registry.associateSessionWithInstance(sessionId, instanceId);
+    logger.info(`关联会话和实例结果`, { sessionId, instanceId, success: associationResult });
+
+    if (!associationResult) {
+      return res.status(500).json({
+        success: false,
+        error: '关联会话和实例失败',
+      });
+    }
+
+    // 如果会话中还没有这个MCP名称的连接
+    const mcpName = instance.mcpSession.name;
+    const sessionMcps = sessionManager.getSessionMcps(sessionId);
+
+    if (!sessionMcps[mcpName]) {
+      // 创建MCP连接记录
+      const mcpData = {
+        name: mcpName,
+        instanceId: instanceId,
+        tools: instance.mcpSession.tools || [],
+        clientType: instance.mcpSession.clientType,
+        status: 'connected',
+        isFromOtherSession: true, // 标记为从其他会话共享的
+      };
+
+      // 将实例与会话关联
+      sessionManager.connectMcpToSession(sessionId, instanceId, mcpData);
+
+      logger.info(`会话已连接到MCP实例`, {
+        sessionId,
+        mcpName,
+        instanceId,
+      });
+    }
+
+    // 返回会话中的MCP信息
+    const updatedMcps = sessionManager.getSessionMcps(sessionId);
+
+    res.json({
+      success: true,
+      mcp: updatedMcps[mcpName],
+    });
+  } catch (error) {
+    logger.error('连接MCP实例错误:', error);
+    console.error('连接MCP实例错误:', error);
+    res.status(500).json({
+      success: false,
+      error: `连接MCP实例失败: ${error.message}`,
+    });
+  }
+}
+
 module.exports = {
   connectMcp,
   disconnectMcp,
@@ -327,4 +425,5 @@ module.exports = {
   getInstanceDetail,
   getPoolStats,
   diagnoseMcpCommand,
+  connectToInstance,
 };

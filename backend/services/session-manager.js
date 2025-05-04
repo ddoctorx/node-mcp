@@ -44,7 +44,8 @@ function createSession(userId) {
 
       // 将实例关联到新会话
       if (instance.mcpSession) {
-        sessions[sessionId].mcpSessions[instance.mcpSession.name] = {
+        // 创建MCP会话对象，保留所有必要的属性
+        const mcpSessionObj = {
           instanceId: instance.instanceId,
           name: instance.mcpSession.name,
           clientType: instance.mcpSession.clientType,
@@ -56,6 +57,18 @@ function createSession(userId) {
           url: instance.mcpSession.url,
           isExternal: instance.mcpSession.isExternal || true,
         };
+
+        // 针对不同类型的MCP添加特殊属性
+        if (instance.mcpSession.clientType === 'stdio' && instance.mcpSession.process) {
+          mcpSessionObj.process = instance.mcpSession.process;
+          logger.info(`已为实例[${instance.instanceId}]复制进程对象到会话[${sessionId}]`);
+        } else if (instance.mcpSession.clientType === 'sse') {
+          mcpSessionObj.heartbeatInterval = instance.mcpSession.heartbeatInterval;
+          mcpSessionObj.lastPingTime = instance.mcpSession.lastPingTime;
+        }
+
+        // 保存到会话
+        sessions[sessionId].mcpSessions[instance.mcpSession.name] = mcpSessionObj;
         registry.associateSessionWithInstance(sessionId, instance.instanceId);
       }
     });
@@ -113,6 +126,7 @@ function connectMcpToSession(sessionId, instanceId, mcpSession) {
     throw new Error(`会话不存在: ${sessionId}`);
   }
 
+  // 确保保留process对象以及所有原始属性
   session.mcpSessions[mcpSession.name] = {
     instanceId,
     name: mcpSession.name,
@@ -123,10 +137,24 @@ function connectMcpToSession(sessionId, instanceId, mcpSession) {
     args: mcpSession.args,
     env: mcpSession.env,
     url: mcpSession.url,
+    isExternal: mcpSession.isExternal || false,
+    // 如果是stdio类型，确保传递process对象
+    ...(mcpSession.clientType === 'stdio' && { process: mcpSession.process }),
+    // 如果是SSE类型，确保传递相关属性
+    ...(mcpSession.clientType === 'sse' && {
+      heartbeatInterval: mcpSession.heartbeatInterval,
+      lastPingTime: mcpSession.lastPingTime,
+    }),
   };
 
   // 关联会话到实例
   registry.associateSessionWithInstance(sessionId, instanceId);
+
+  logger.debug(`已将MCP ${mcpSession.name} 连接到会话 ${sessionId}`, {
+    instanceId,
+    mcpType: mcpSession.clientType,
+    hasProcess: mcpSession.clientType === 'stdio' && !!mcpSession.process,
+  });
 
   return true;
 }

@@ -67,24 +67,82 @@ async function sendMessage(req, res) {
       mcpToolAdapter.mcpToolAdapter,
     );
 
-    // 保存AI回复到历史记录
+    // 根据响应类型处理
     if (processedResponse.type === 'text') {
+      // 保存AI文本回复到历史记录
       sessionManager.addMessageToChatHistory(sessionId, {
         type: 'assistant',
         content: processedResponse.content,
       });
+
+      res.json({
+        success: true,
+        response: processedResponse,
+      });
     } else if (processedResponse.type === 'function_call') {
+      // 保存函数调用到历史记录
       sessionManager.addMessageToChatHistory(sessionId, {
         type: 'function_call',
         calls: processedResponse.calls,
         results: processedResponse.results,
       });
-    }
 
-    res.json({
-      success: true,
-      response: processedResponse,
-    });
+      logger.info(`工具调用完成，准备获取最终回答`, {
+        sessionId,
+        callCount: processedResponse.calls.length,
+      });
+
+      // 构建包含工具调用结果的消息历史
+      const messagesWithToolResults = [...message];
+
+      // 添加函数调用消息
+      messagesWithToolResults.push({
+        role: 'assistant',
+        content: null,
+        tool_calls: processedResponse.calls,
+      });
+
+      // 添加所有工具调用结果
+      for (const result of processedResponse.results) {
+        messagesWithToolResults.push({
+          role: 'tool',
+          tool_call_id: result.tool_call_id,
+          content: result.result,
+        });
+      }
+
+      // 再次调用OpenAI，将工具结果传回给模型获取最终回答
+      logger.info(`向OpenAI发送工具调用结果，获取最终回答`, { sessionId });
+      const followUpResponse = await openaiService.callChatCompletion(messagesWithToolResults);
+
+      // 确保返回的是文本内容
+      if (
+        followUpResponse.choices &&
+        followUpResponse.choices[0] &&
+        followUpResponse.choices[0].message
+      ) {
+        const finalContent = followUpResponse.choices[0].message.content;
+
+        // 保存最终回复到历史记录
+        sessionManager.addMessageToChatHistory(sessionId, {
+          type: 'assistant',
+          content: finalContent,
+        });
+
+        // 返回完整结果
+        res.json({
+          success: true,
+          response: {
+            type: 'function_result',
+            function_calls: processedResponse.calls,
+            results: processedResponse.results,
+            final_response: finalContent,
+          },
+        });
+      } else {
+        throw new Error('无法获取模型的最终回复');
+      }
+    }
   } catch (error) {
     logger.error(`处理消息失败`, { error: error.message });
 
