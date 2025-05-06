@@ -1271,6 +1271,65 @@ const pythonMcpManager = {
     this.detectSystemPython();
     this.setupEventListeners();
     this.updatePreview();
+    this.checkUvxCommand(); // 添加检查UVX命令
+  },
+
+  // 检查UVX命令是否存在
+  checkUvxCommand() {
+    fetch('/api/mcp/diagnose', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        command: 'uvx',
+      }),
+    })
+      .then(response => response.json())
+      .then(data => {
+        const warningContainer = document.getElementById('uvx-command-warning');
+        if (!warningContainer) {
+          // 创建警告容器
+          const uvxFields = document.getElementById('uvx-fields');
+          if (uvxFields) {
+            const warningDiv = document.createElement('div');
+            warningDiv.id = 'uvx-command-warning';
+            warningDiv.className = 'command-warning';
+            uvxFields.insertBefore(warningDiv, uvxFields.firstChild);
+          }
+        }
+
+        // 获取警告容器
+        const warningDiv = document.getElementById('uvx-command-warning');
+        if (warningDiv) {
+          if (!data.result.success) {
+            warningDiv.innerHTML = `
+            <div class="warning-message">
+              <strong>警告:</strong> 系统中找不到uvx命令。创建MCP时将自动安装。
+              <div class="details">
+                <code>安装命令: pip install uvx</code>
+              </div>
+            </div>
+          `;
+            warningDiv.style.display = 'block';
+          } else {
+            warningDiv.innerHTML = `
+            <div class="success-message">
+              <strong>检测到UVX:</strong> ${data.result.path}
+            </div>
+          `;
+            warningDiv.style.display = 'block';
+
+            // 3秒后隐藏成功消息
+            setTimeout(() => {
+              warningDiv.style.display = 'none';
+            }, 3000);
+          }
+        }
+      })
+      .catch(error => {
+        console.error('检查UVX命令失败:', error);
+      });
   },
 
   detectSystemPython() {
@@ -1355,6 +1414,26 @@ const pythonMcpManager = {
     const pipCommandSelect = document.getElementById('pip-command');
     const customPipPath = document.getElementById('custom-pip-path');
     const createButton = document.getElementById('create-python-mcp-btn');
+    const commandTypeSelect = document.getElementById('command-type');
+    const uvxPackageInput = document.getElementById('uvx-package');
+
+    // 命令类型切换
+    commandTypeSelect.addEventListener('change', () => {
+      const commandType = commandTypeSelect.value;
+
+      // 显示/隐藏相应的表单字段
+      if (commandType === 'python') {
+        document.getElementById('python-fields').style.display = 'block';
+        document.getElementById('uvx-fields').style.display = 'none';
+      } else if (commandType === 'uvx') {
+        document.getElementById('python-fields').style.display = 'none';
+        document.getElementById('uvx-fields').style.display = 'block';
+        // 切换到UVX模式时检查UVX命令
+        this.checkUvxCommand();
+      }
+
+      this.updatePreview();
+    });
 
     // 添加更新预览的事件监听器
     [
@@ -1366,6 +1445,8 @@ const pythonMcpManager = {
       customPythonPath,
       pipCommandSelect,
       customPipPath,
+      uvxPackageInput,
+      commandTypeSelect,
     ].forEach(el => {
       el.addEventListener('input', () => this.updatePreview());
       el.addEventListener('change', () => this.updatePreview());
@@ -1394,64 +1475,93 @@ const pythonMcpManager = {
 
   updatePreview() {
     const name = document.getElementById('python-server-name').value.trim() || 'python-mcp';
-    const packageName =
-      document.getElementById('python-package-name').value.trim() || 'mcp-server-fetch';
-    const moduleName =
-      document.getElementById('python-module-name').value.trim() || 'mcp_server_fetch';
+    const commandType = document.getElementById('command-type').value;
     const extraArgs = document.getElementById('python-extra-args').value.trim();
 
-    // 获取Python命令，优先使用自定义输入
-    let pythonCommand = document.getElementById('custom-python-path').value.trim();
-    if (!pythonCommand) {
-      pythonCommand = document.getElementById('python-version').value;
-    }
+    // 根据命令类型构建不同的配置
+    let config = { mcpServers: {} };
 
-    // 获取Pip命令，优先使用自定义输入
-    let pipCommand = document.getElementById('custom-pip-path').value.trim();
-    if (!pipCommand) {
-      pipCommand = document.getElementById('pip-command').value;
-    }
+    if (commandType === 'python') {
+      const packageName =
+        document.getElementById('python-package-name').value.trim() || 'mcp-server-fetch';
+      const moduleName =
+        document.getElementById('python-module-name').value.trim() || 'mcp_server_fetch';
 
-    // 准备参数数组
-    const args = ['-m', moduleName];
+      // 获取Python命令，优先使用自定义输入
+      let pythonCommand = document.getElementById('custom-python-path').value.trim();
+      if (!pythonCommand) {
+        pythonCommand = document.getElementById('python-version').value;
+      }
 
-    // 添加额外参数
-    if (extraArgs) {
-      extraArgs.split('\n').forEach(arg => {
-        if (arg.trim()) {
-          args.push(arg.trim());
-        }
-      });
-    }
+      // 获取Pip命令，优先使用自定义输入
+      let pipCommand = document.getElementById('custom-pip-path').value.trim();
+      if (!pipCommand) {
+        pipCommand = document.getElementById('pip-command').value;
+      }
 
-    // 解析pip命令为命令和参数
-    let pipSetupCommand, pipSetupArgs;
-    if (pipCommand.includes(' ')) {
-      // 处理像 "python -m pip" 这样的命令
-      const parts = pipCommand.split(' ');
-      pipSetupCommand = parts[0];
-      pipSetupArgs = parts.slice(1).concat(['install', packageName]);
-    } else {
-      // 处理简单命令如 "pip" 或 "pip3"
-      pipSetupCommand = pipCommand;
-      pipSetupArgs = ['install', packageName];
-    }
+      // 准备参数数组
+      const args = ['-m', moduleName];
 
-    // 创建配置对象
-    const config = {
-      mcpServers: {
-        [name]: {
-          command: pythonCommand,
-          args: args,
-          description: `Python ${packageName} MCP服务器`,
-          setup: {
-            command: pipSetupCommand,
-            args: pipSetupArgs,
-            description: `安装${packageName}包`,
-          },
+      // 添加额外参数
+      if (extraArgs) {
+        extraArgs.split('\n').forEach(arg => {
+          if (arg.trim()) {
+            args.push(arg.trim());
+          }
+        });
+      }
+
+      // 解析pip命令为命令和参数
+      let pipSetupCommand, pipSetupArgs;
+      if (pipCommand.includes(' ')) {
+        // 处理像 "python -m pip" 这样的命令
+        const parts = pipCommand.split(' ');
+        pipSetupCommand = parts[0];
+        pipSetupArgs = parts.slice(1).concat(['install', packageName]);
+      } else {
+        // 处理简单命令如 "pip" 或 "pip3"
+        pipSetupCommand = pipCommand;
+        pipSetupArgs = ['install', packageName];
+      }
+
+      // 创建Python模式的配置对象
+      config.mcpServers[name] = {
+        command: pythonCommand,
+        args: args,
+        description: `Python ${packageName} MCP服务器`,
+        setup: {
+          command: pipSetupCommand,
+          args: pipSetupArgs,
+          description: `安装${packageName}包`,
         },
-      },
-    };
+      };
+    } else if (commandType === 'uvx') {
+      const uvxPackage = document.getElementById('uvx-package').value.trim() || 'mcp-server-time';
+
+      // 准备参数数组
+      const args = [uvxPackage];
+
+      // 添加额外参数
+      if (extraArgs) {
+        extraArgs.split('\n').forEach(arg => {
+          if (arg.trim()) {
+            args.push(arg.trim());
+          }
+        });
+      }
+
+      // 创建UVX模式的配置对象
+      config.mcpServers[name] = {
+        command: 'uvx',
+        args: args,
+        description: `UVX ${uvxPackage} MCP服务器`,
+        setup: {
+          command: 'pip',
+          args: ['install', 'uvx'],
+          description: `安装UVX命令`,
+        },
+      };
+    }
 
     // 更新预览
     document.getElementById('python-config-preview').textContent = JSON.stringify(config, null, 2);
@@ -1459,86 +1569,135 @@ const pythonMcpManager = {
 
   createPythonMcp() {
     const name = document.getElementById('python-server-name').value.trim();
-    const packageName = document.getElementById('python-package-name').value.trim();
-    const moduleName = document.getElementById('python-module-name').value.trim();
+    const commandType = document.getElementById('command-type').value;
+    const extraArgs = document.getElementById('python-extra-args').value.trim();
 
-    // 获取Python命令，优先使用自定义输入
-    let pythonCommand = document.getElementById('custom-python-path').value.trim();
-    if (!pythonCommand) {
-      pythonCommand = document.getElementById('python-version').value;
-    }
-
-    // 获取Pip命令，优先使用自定义输入
-    let pipCommand = document.getElementById('custom-pip-path').value.trim();
-    if (!pipCommand) {
-      pipCommand = document.getElementById('pip-command').value;
-    }
-
-    if (!name || !packageName || !moduleName) {
-      toastManager.showToast('请填写所有必填字段', 'error');
+    // 验证名称
+    if (!name) {
+      toastManager.showToast('请填写MCP名称', 'error');
       return;
     }
 
+    // 验证会话ID
     if (!sessionId) {
       toastManager.showToast('请先创建会话', 'error');
       return;
     }
 
-    // 准备参数数组
-    const args = ['-m', moduleName];
-
-    // 添加额外参数
-    const extraArgs = document.getElementById('python-extra-args').value.trim();
-    if (extraArgs) {
-      extraArgs.split('\n').forEach(arg => {
-        if (arg.trim()) {
-          args.push(arg.trim());
-        }
-      });
-    }
-
-    // 解析pip命令为命令和参数
-    let pipSetupCommand, pipSetupArgs;
-    if (pipCommand.includes(' ')) {
-      // 处理像 "python -m pip" 这样的命令
-      const parts = pipCommand.split(' ');
-      pipSetupCommand = parts[0];
-      pipSetupArgs = parts.slice(1).concat(['install', packageName]);
-    } else {
-      // 处理简单命令如 "pip" 或 "pip3"
-      pipSetupCommand = pipCommand;
-      pipSetupArgs = ['install', packageName];
-    }
-
-    // 创建完整的配置
-    const setupConfig = {
-      command: pipSetupCommand,
-      args: pipSetupArgs,
-      description: `安装${packageName}包`,
-    };
-
-    // 准备最终请求负载 - 直接使用mcpServers格式，让转换发生在mcpManager.addMcp中
-    const payload = {
+    // 根据命令类型构建不同的配置
+    let payload = {
       sessionId,
       name,
       clientType: 'stdio',
-      command: pythonCommand,
-      args: args,
-      description: `Python ${packageName} MCP服务器`,
-      setup: setupConfig,
     };
 
-    console.log('准备发送的Python MCP payload:', JSON.stringify(payload, null, 2));
+    if (commandType === 'python') {
+      const packageName = document.getElementById('python-package-name').value.trim();
+      const moduleName = document.getElementById('python-module-name').value.trim();
+
+      // 验证必填字段
+      if (!packageName || !moduleName) {
+        toastManager.showToast('请填写所有必填字段', 'error');
+        return;
+      }
+
+      // 获取Python命令，优先使用自定义输入
+      let pythonCommand = document.getElementById('custom-python-path').value.trim();
+      if (!pythonCommand) {
+        pythonCommand = document.getElementById('python-version').value;
+      }
+
+      // 获取Pip命令，优先使用自定义输入
+      let pipCommand = document.getElementById('custom-pip-path').value.trim();
+      if (!pipCommand) {
+        pipCommand = document.getElementById('pip-command').value;
+      }
+
+      // 准备参数数组
+      const args = ['-m', moduleName];
+
+      // 添加额外参数
+      if (extraArgs) {
+        extraArgs.split('\n').forEach(arg => {
+          if (arg.trim()) {
+            args.push(arg.trim());
+          }
+        });
+      }
+
+      // 解析pip命令为命令和参数
+      let pipSetupCommand, pipSetupArgs;
+      if (pipCommand.includes(' ')) {
+        // 处理像 "python -m pip" 这样的命令
+        const parts = pipCommand.split(' ');
+        pipSetupCommand = parts[0];
+        pipSetupArgs = parts.slice(1).concat(['install', packageName]);
+      } else {
+        // 处理简单命令如 "pip" 或 "pip3"
+        pipSetupCommand = pipCommand;
+        pipSetupArgs = ['install', packageName];
+      }
+
+      // 设置Python模式的配置
+      payload.command = pythonCommand;
+      payload.args = args;
+      payload.description = `Python ${packageName} MCP服务器`;
+      payload.setup = {
+        command: pipSetupCommand,
+        args: pipSetupArgs,
+        description: `安装${packageName}包`,
+      };
+    } else if (commandType === 'uvx') {
+      const uvxPackage = document.getElementById('uvx-package').value.trim();
+
+      // 验证必填字段
+      if (!uvxPackage) {
+        toastManager.showToast('请填写UVX包名', 'error');
+        return;
+      }
+
+      // 准备参数数组
+      const args = [uvxPackage];
+
+      // 添加额外参数
+      if (extraArgs) {
+        extraArgs.split('\n').forEach(arg => {
+          if (arg.trim()) {
+            args.push(arg.trim());
+          }
+        });
+      }
+
+      // 设置UVX模式的配置
+      payload.command = 'uvx';
+      payload.args = args;
+      payload.description = `UVX ${uvxPackage} MCP服务器`;
+
+      // 添加UVX的安装过程
+      payload.setup = {
+        command: 'pip',
+        args: ['install', 'uvx'],
+        description: `安装UVX命令`,
+      };
+    }
+
+    console.log('准备发送的Python/UVX MCP payload:', JSON.stringify(payload, null, 2));
 
     // 显示加载状态
     document.getElementById('create-python-mcp-btn').disabled = true;
-    toastManager.showToast('正在创建 Python MCP 服务器，这可能需要一些时间...', 'info');
+    toastManager.showToast(
+      `正在创建 ${commandType.toUpperCase()} MCP 服务器，这可能需要一些时间...`,
+      'info',
+    );
 
     // 发送请求
     mcpManager
       .addMcp(payload)
       .then(mcp => {
-        toastManager.showToast(`Python MCP 服务器 "${name}" 已成功创建`, 'success');
+        toastManager.showToast(
+          `${commandType.toUpperCase()} MCP 服务器 "${name}" 已成功创建`,
+          'success',
+        );
 
         // 手动触发checkChatAvailability，确保聊天功能被启用
         if (chatModule && typeof chatModule.checkChatAvailability === 'function') {
@@ -1549,7 +1708,7 @@ const pythonMcpManager = {
         switchTab('list-mcp');
       })
       .catch(error => {
-        console.error('创建 Python MCP 服务器失败:', error);
+        console.error(`创建 ${commandType.toUpperCase()} MCP 服务器失败:`, error);
 
         // 构建更友好的错误消息
         let errorMsg = error.message || '未知错误';
@@ -1560,15 +1719,25 @@ const pythonMcpManager = {
           errorMsg.includes('找不到命令') ||
           errorMsg.includes('not found')
         ) {
-          if (errorMsg.includes('pip') || errorMsg.includes('pip3')) {
-            errorMsg += '\n\n建议: 请尝试选择其他pip命令，如 "python -m pip" 或 "python3 -m pip"';
-          } else if (errorMsg.includes('python')) {
-            errorMsg += '\n\n建议: 请确认Python已正确安装，并设置了正确的PATH环境变量';
+          if (commandType === 'python') {
+            if (errorMsg.includes('pip') || errorMsg.includes('pip3')) {
+              errorMsg += '\n\n建议: 请尝试选择其他pip命令，如 "python -m pip" 或 "python3 -m pip"';
+            } else if (errorMsg.includes('python')) {
+              errorMsg += '\n\n建议: 请确认Python已正确安装，并设置了正确的PATH环境变量';
+            }
+          } else if (commandType === 'uvx') {
+            errorMsg += '\n\n建议: 请确认uvx已正确安装，可通过 "pip install uvx" 进行安装';
           }
         } else if (errorMsg.includes('Permission denied') || errorMsg.includes('权限不足')) {
           errorMsg += '\n\n建议: 请尝试以管理员权限运行服务器，或使用 "--user" 选项';
         } else if (errorMsg.includes('无法安装') || errorMsg.includes('Could not find a version')) {
-          errorMsg += '\n\n建议: 请检查包名 "' + packageName + '" 是否正确，网络是否正常';
+          if (commandType === 'python') {
+            const packageName = document.getElementById('python-package-name').value.trim();
+            errorMsg += '\n\n建议: 请检查包名 "' + packageName + '" 是否正确，网络是否正常';
+          } else if (commandType === 'uvx') {
+            const uvxPackage = document.getElementById('uvx-package').value.trim();
+            errorMsg += '\n\n建议: 请检查包名 "' + uvxPackage + '" 是否正确，网络是否正常';
+          }
         }
 
         // 显示错误消息

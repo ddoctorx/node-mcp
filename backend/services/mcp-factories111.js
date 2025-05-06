@@ -9,23 +9,24 @@ const os = require('os');
 const fs = require('fs');
 
 // 从MCP进程获取工具列表
+// 这个函数非常重要，它负责解析MCP进程输出来获取可用工具列表
 async function getToolsFromProcess(childProcess) {
   return new Promise((resolve, reject) => {
-    // 设置超时 - 增加到30秒
+    // 设置超时 - 增加到30秒，防止长时间等待导致阻塞
     const timeout = setTimeout(() => {
       reject(new Error('获取工具列表超时'));
-    }, 30000); // 从20秒增加到30秒
+    }, 30000); // 从20秒增加到30秒，为慢速进程提供更多时间
 
-    let buffer = '';
-    let errorBuffer = '';
-    let toolsReceived = false;
-    let initRequestId = 1;
-    let toolsListRequestId = 2;
+    let buffer = ''; // 存储标准输出
+    let errorBuffer = ''; // 存储错误输出
+    let toolsReceived = false; // 标记是否已收到工具列表
+    let initRequestId = 1; // 初始化请求ID
+    let toolsListRequestId = 2; // 工具列表请求ID
 
     // 监听stderr以捕获错误
     const errorHandler = data => {
       errorBuffer += data.toString();
-      logger.error(`工具列表获取错误输出: ${data.toString()}`);
+      logger.error(`工具列表获取错误输出: ${data.toString()}`); // 记录错误输出便于调试
     };
 
     // 添加更详细的日志
@@ -34,21 +35,21 @@ async function getToolsFromProcess(childProcess) {
     // 监听进程输出
     const dataHandler = data => {
       buffer += data.toString();
-      logger.debug(`接收到MCP数据: ${data.toString()}`);
+      logger.debug(`接收到MCP数据: ${data.toString()}`); // 记录原始数据便于调试
 
       // 增加调试输出
       if (buffer.includes('tools') || buffer.includes('jsonrpc')) {
-        logger.info('接收到可能包含工具列表的数据');
+        logger.info('接收到可能包含工具列表的数据'); // 关键词匹配，提示可能找到工具列表
       }
 
       try {
-        // 先尝试逐行处理JSON数据
+        // 先尝试逐行处理JSON数据，因为输出可能包含多行JSON
         const lines = buffer.split('\n').filter(line => line.trim());
 
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i];
 
-          // 跳过非JSON的行
+          // 跳过非JSON的行，避免解析错误
           if (!line.startsWith('{') && !line.startsWith('[')) {
             continue;
           }
@@ -58,12 +59,13 @@ async function getToolsFromProcess(childProcess) {
             logger.debug(`解析的响应:`, response);
 
             // 检查是否包含工具列表 - 直接格式
+            // 某些MCP会直接输出工具列表
             if (response.tools && Array.isArray(response.tools)) {
               logger.info(`发现FastMCP直接格式的工具列表，包含 ${response.tools.length} 个工具`);
               toolsReceived = true;
-              clearTimeout(timeout);
+              clearTimeout(timeout); // 清除超时计时器
 
-              // 清理事件监听器
+              // 清理事件监听器，防止内存泄漏
               childProcess.stdout.removeAllListeners('data');
               childProcess.stderr.removeAllListeners('data');
               childProcess.removeAllListeners('error');
@@ -74,6 +76,7 @@ async function getToolsFromProcess(childProcess) {
             }
 
             // 检查是否包含JSON-RPC格式的工具列表
+            // 某些MCP符合JSON-RPC 2.0规范
             if (
               response.jsonrpc === '2.0' &&
               response.result &&
@@ -97,6 +100,7 @@ async function getToolsFromProcess(childProcess) {
             }
 
             // 处理工具列表响应 - 其他格式
+            // 处理特定ID的响应，用于主动请求的情况
             if (response.id === toolsListRequestId && response.result && response.result.tools) {
               toolsReceived = true;
               clearTimeout(timeout);
@@ -113,6 +117,7 @@ async function getToolsFromProcess(childProcess) {
             }
 
             // 兼容性检查：某些MCP可能不完全遵循JSON-RPC协议
+            // 处理非标准格式的输出，增强兼容性
             if (response.methods || response.functions) {
               logger.info(`检测到兼容性格式的工具列表`);
 
@@ -150,14 +155,16 @@ async function getToolsFromProcess(childProcess) {
               }
             }
           } catch (lineError) {
-            logger.debug(`尝试解析行失败: ${line}`);
+            logger.debug(`尝试解析行失败: ${line}`); // JSON解析失败，可能不是有效的JSON
           }
         }
 
         // 尝试在整个缓冲区中寻找JSON对象
+        // 处理跨行JSON的情况，有些输出可能不是按行分隔的
         if (!toolsReceived && buffer.includes('{') && buffer.includes('}')) {
           try {
             // 提取可能的JSON字符串 - 寻找第一个{和对应的最后一个}
+            // 这是一种复杂的JSON解析方法，处理不规范输出
             const start = buffer.indexOf('{');
             let end = -1;
             let bracketCount = 0;
@@ -224,7 +231,7 @@ async function getToolsFromProcess(childProcess) {
           return;
         } else {
           // 保留未解析的行
-          // 只保留最后一个不完整的行（如果有的话）
+          // 只保留最后一个不完整的行（如果有的话），优化内存使用
           const lastLine = lines[lines.length - 1];
           if (lastLine && !lastLine.endsWith('}')) {
             buffer = lastLine;
@@ -257,7 +264,7 @@ async function getToolsFromProcess(childProcess) {
         logger.info('进程已退出，尝试从现有输出中解析工具列表');
 
         try {
-          // 查找可能的JSON对象
+          // 查找可能的JSON对象，使用正则表达式匹配
           const jsonMatches = buffer.match(/\{.*\}/g) || [];
 
           for (const jsonStr of jsonMatches) {
@@ -302,6 +309,7 @@ async function getToolsFromProcess(childProcess) {
       if (!toolsReceived) {
         logger.info('在10秒内未收到自动工具列表，尝试发送initialize请求...');
 
+        // 构建标准的JSON-RPC初始化请求
         const initRequest = {
           jsonrpc: '2.0',
           id: initRequestId,
@@ -322,7 +330,7 @@ async function getToolsFromProcess(childProcess) {
           childProcess.stdin.write(JSON.stringify(initRequest) + '\n');
           logger.info('已发送初始化请求:', JSON.stringify(initRequest));
 
-          // 等待2秒后再发送工具列表请求
+          // 等待2秒后再发送工具列表请求，给服务器处理时间
           setTimeout(() => {
             if (!toolsReceived) {
               logger.info('发送工具列表请求...');
@@ -348,6 +356,7 @@ async function getToolsFromProcess(childProcess) {
     }, 10000); // 给进程10秒时间自动输出工具列表
 
     // 如果在更长时间后仍未收到工具列表，尝试获取空工具列表来避免超时
+    // 这是一个故障安全机制，确保即使获取工具失败也能继续执行
     setTimeout(() => {
       if (!toolsReceived) {
         logger.warn('工具列表获取时间过长，尝试返回空工具列表');
@@ -366,6 +375,7 @@ async function getToolsFromProcess(childProcess) {
 }
 
 // 调用远程MCP工具
+// 负责向MCP进程发送工具调用请求并解析响应
 async function callRemoteMcpTool(mcpSession, toolName, params) {
   logger.debug(`准备调用远程MCP工具: ${toolName}, 参数:`, params);
 
@@ -402,20 +412,20 @@ async function callRemoteMcpTool(mcpSession, toolName, params) {
       return reject(new Error('工具名称不能为空'));
     }
 
-    // 确保params是对象
+    // 确保params是对象，防止传入非对象导致错误
     const safeParams = params && typeof params === 'object' ? params : {};
 
-    // 设置超时
+    // 设置超时，防止工具调用无响应
     const timeout = setTimeout(() => {
       logger.error(`工具调用超时: ${toolName}`);
       cleanup();
       reject(new Error('工具调用超时'));
     }, 30000);
 
-    // 生成请求ID
+    // 生成请求ID，随机生成避免冲突
     const requestId = 1000 + Math.floor(Math.random() * 9000);
 
-    // 构建MCP协议请求
+    // 构建MCP协议请求，符合JSON-RPC 2.0规范
     const request = {
       jsonrpc: '2.0',
       id: requestId,
@@ -428,9 +438,9 @@ async function callRemoteMcpTool(mcpSession, toolName, params) {
 
     logger.debug(`发送调用请求:`, JSON.stringify(request, null, 2));
 
-    let buffer = '';
-    let errorOutput = '';
-    let responseReceived = false;
+    let buffer = ''; // 存储标准输出
+    let errorOutput = ''; // a存储错误输出
+    let responseReceived = false; // 标记是否已收到响应
 
     // 监听进程的错误输出
     const errorHandler = data => {
@@ -439,7 +449,7 @@ async function callRemoteMcpTool(mcpSession, toolName, params) {
       logger.error(`工具 ${toolName} 错误输出:`, errorData);
     };
 
-    // 清理函数，确保只执行一次
+    // 清理函数，确保只执行一次，防止多次响应处理
     const cleanup = () => {
       if (!responseReceived) {
         responseReceived = true;
@@ -463,7 +473,7 @@ async function callRemoteMcpTool(mcpSession, toolName, params) {
 
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i];
-          if (!line.startsWith('{')) continue;
+          if (!line.startsWith('{')) continue; // 跳过非JSON行
 
           try {
             const response = JSON.parse(line);
@@ -493,7 +503,7 @@ async function callRemoteMcpTool(mcpSession, toolName, params) {
                 `收到带有结果的JSON-RPC响应，请求ID不匹配 (实际: ${response.id}, 预期: ${requestId})，但继续处理`,
               );
 
-              // 特别处理特定工具类型
+              // 特别处理特定工具类型，兼容性处理
               if (
                 (toolName === 'market-trending' || toolName === 'stock-quote') &&
                 typeof response.result === 'object'
@@ -513,7 +523,7 @@ async function callRemoteMcpTool(mcpSession, toolName, params) {
         // 尝试解析完整的JSON对象（补充处理，处理跨行情况）
         if (!responseReceived && buffer.includes('{') && buffer.includes('}')) {
           try {
-            // 查找可能的完整JSON对象
+            // 查找可能的完整JSON对象，处理复杂输出
             const jsonStart = buffer.indexOf('{');
             let jsonEnd = -1;
             let bracketCount = 0;
@@ -550,7 +560,7 @@ async function callRemoteMcpTool(mcpSession, toolName, params) {
                   return;
                 }
 
-                // 兼容模式处理
+                // 兼容模式处理特定工具
                 if (
                   response.result &&
                   (toolName === 'market-trending' || toolName === 'stock-quote') &&
@@ -570,7 +580,7 @@ async function callRemoteMcpTool(mcpSession, toolName, params) {
 
         // 如果没有找到匹配的响应，但是收到了错误输出
         if (errorOutput && !responseReceived) {
-          // 不要立即拒绝，先继续等待
+          // 不要立即拒绝，先继续等待，因为错误输出可能只是警告
           logger.debug(`收到错误输出但继续等待响应: ${errorOutput}`);
         }
       } catch (e) {
@@ -594,6 +604,7 @@ async function callRemoteMcpTool(mcpSession, toolName, params) {
 }
 
 // 创建MCP进程
+// 启动子进程并获取工具列表
 async function createMcpProcess(config, instanceId) {
   logger.info(`创建MCP进程，配置:`, config);
 
@@ -606,7 +617,7 @@ async function createMcpProcess(config, instanceId) {
   }
 
   try {
-    // 命令白名单检查
+    // 命令白名单检查，安全措施，防止执行任意命令
     const allowedExecutables = [
       'node',
       'npm',
@@ -628,7 +639,7 @@ async function createMcpProcess(config, instanceId) {
       'python3.8',
     ];
 
-    // 获取基础命令名（不含路径）
+    // 获取基础命令名（不含路径），用于白名单检查
     const baseCmd = config.command.split('/').pop().split('\\').pop();
 
     // 允许直接执行js文件
@@ -647,15 +658,15 @@ async function createMcpProcess(config, instanceId) {
     const env = {
       ...process.env, // 包含默认环境变量
       ...config.env, // 添加配置的环境变量
-      MCP_INSTANCE_ID: instanceId, // 注入实例ID
-      PATH: process.env.PATH, // 确保PATH环境变量被正确传递
+      MCP_INSTANCE_ID: instanceId, // 注入实例ID，便于进程识别自己
+      PATH: process.env.PATH, // 确保PATH环境变量被正确传递，防止命令找不到
     };
 
     // 设置spawn选项
     const spawnOptions = {
       env,
-      stdio: ['pipe', 'pipe', 'pipe'], // stdin, stdout, stderr
-      shell: true, // 始终使用shell执行命令
+      stdio: ['pipe', 'pipe', 'pipe'], // stdin, stdout, stderr - 需要双向通信
+      shell: true, // 始终使用shell执行命令，提高兼容性
     };
 
     // 如果配置中指定了工作目录，则使用它
@@ -699,13 +710,13 @@ async function createMcpProcess(config, instanceId) {
     return {
       success: true,
       mcpSession: {
-        clientType: 'stdio',
+        clientType: 'stdio', // 标识为标准I/O类型
         command: config.command,
         args: config.args || [],
         env: config.env || {},
         workingDir: config.workingDir,
-        process: childProcess,
-        tools: tools || [],
+        process: childProcess, // 保存进程引用，用于后续交互
+        tools: tools || [], // 保存工具列表
         status: 'connected',
       },
     };
@@ -720,6 +731,7 @@ async function createMcpProcess(config, instanceId) {
 }
 
 // 从SSE服务器获取工具列表
+// SSE(Server-Sent Events)是另一种通信方式，通过HTTP请求获取工具列表
 async function getToolsFromSseServer(url) {
   try {
     const toolsUrl = `${url}/tools/list`;
@@ -727,6 +739,7 @@ async function getToolsFromSseServer(url) {
 
     const response = await axios.get(toolsUrl);
 
+    // 处理不同格式的响应，增强兼容性
     if (response.data && Array.isArray(response.data.tools)) {
       return response.data.tools;
     } else if (Array.isArray(response.data)) {
@@ -741,6 +754,7 @@ async function getToolsFromSseServer(url) {
 }
 
 // 调用SSE MCP工具
+// 通过HTTP请求调用远程工具，而不是stdin/stdout通信
 async function callSseMcpTool(mcpSession, toolName, params) {
   if (!mcpSession || !mcpSession.url) {
     throw new Error('无效的SSE MCP会话或URL');

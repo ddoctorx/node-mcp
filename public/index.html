@@ -278,44 +278,62 @@
           </div>
 
           <div class="form-group">
-            <label for="python-package-name">Python包名称 *</label>
-            <input type="text" id="python-package-name" placeholder="例如: mcp-server-fetch" required
-              value="mcp-server-fetch">
+            <label for="command-type">命令类型</label>
+            <select id="command-type">
+              <option value="python">Python</option>
+              <option value="uvx">UVX</option>
+            </select>
           </div>
 
-          <div class="form-group">
-            <label for="python-module-name">Python模块名称 *</label>
-            <input type="text" id="python-module-name" placeholder="例如: mcp_server_fetch" required
-              value="mcp_server_fetch">
+          <div id="python-fields">
+            <div class="form-group">
+              <label for="python-package-name">Python包名称 *</label>
+              <input type="text" id="python-package-name" placeholder="例如: mcp-server-fetch" required
+                value="mcp-server-fetch">
+            </div>
+
+            <div class="form-group">
+              <label for="python-module-name">Python模块名称 *</label>
+              <input type="text" id="python-module-name" placeholder="例如: mcp_server_fetch" required
+                value="mcp_server_fetch">
+            </div>
+
+            <div class="form-group">
+              <label for="python-version">Python命令</label>
+              <select id="python-version">
+                <option value="python">python</option>
+                <option value="python3">python3</option>
+                <option value="/opt/homebrew/opt/python@3.13/bin/python3.13">
+                  /opt/homebrew/opt/python@3.13/bin/python3.13
+                </option>
+              </select>
+              <input type="text" id="custom-python-path" placeholder="或输入自定义Python路径" style="margin-top: 5px;">
+            </div>
+
+            <div class="form-group">
+              <label for="pip-command">Pip命令</label>
+              <select id="pip-command">
+                <option value="pip">pip</option>
+                <option value="pip3">pip3</option>
+                <option value="python -m pip">python -m pip</option>
+                <option value="python3 -m pip">python3 -m pip</option>
+                <option value="/opt/homebrew/opt/python@3.13/bin/python3.13 -m pip">homebrew python3.13 -m pip</option>
+              </select>
+              <input type="text" id="custom-pip-path" placeholder="或输入自定义Pip路径" style="margin-top: 5px;">
+            </div>
+          </div>
+
+          <div id="uvx-fields" style="display: none;">
+            <div class="form-group">
+              <label for="uvx-package">UVX 包名 *</label>
+              <input type="text" id="uvx-package" placeholder="例如: mcp-server-time" required value="mcp-server-time">
+            </div>
           </div>
 
           <div class="form-group">
             <label for="python-extra-args">额外参数 (每行一个)</label>
             <textarea id="python-extra-args" placeholder="例如:&#10;--api-key=YOUR_KEY&#10;--debug=true"
               rows="3"></textarea>
-          </div>
-
-          <div class="form-group">
-            <label for="python-version">Python命令</label>
-            <select id="python-version">
-              <option value="python">python</option>
-              <option value="python3">python3</option>
-              <option value="/opt/homebrew/opt/python@3.13/bin/python3.13">/opt/homebrew/opt/python@3.13/bin/python3.13
-              </option>
-            </select>
-            <input type="text" id="custom-python-path" placeholder="或输入自定义Python路径" style="margin-top: 5px;">
-          </div>
-
-          <div class="form-group">
-            <label for="pip-command">Pip命令</label>
-            <select id="pip-command">
-              <option value="pip">pip</option>
-              <option value="pip3">pip3</option>
-              <option value="python -m pip">python -m pip</option>
-              <option value="python3 -m pip">python3 -m pip</option>
-              <option value="/opt/homebrew/opt/python@3.13/bin/python3.13 -m pip">homebrew python3.13 -m pip</option>
-            </select>
-            <input type="text" id="custom-pip-path" placeholder="或输入自定义Pip路径" style="margin-top: 5px;">
           </div>
 
           <div class="python-config-preview">

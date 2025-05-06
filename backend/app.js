@@ -123,4 +123,4 @@ process.on('unhandledRejection', (reason, promise) => {
   logger.error('未处理的Promise拒绝', { reason: reason.message || reason, stack: reason.stack });
 });
 
-module.exports = { app, server };
+module.exports = { app, server, io };
