@@ -1149,7 +1149,7 @@ const chatModule = (() => {
   }
 
   // 添加函数调用信息
-  function addFunctionCallInfo(data, needConfirmation = false) {
+  async function addFunctionCallInfo(data, needConfirmation = false) {
     // 兼容后端返回的两种可能格式：calls 或 function_calls
     const callsData = data.calls || data.function_calls;
 
@@ -1170,6 +1170,20 @@ const chatModule = (() => {
       // 获取函数名称，清晰显示需要调用的是什么函数
       const functionName = callsData[0]?.function?.name || '未知函数';
       const functionParams = callsData[0]?.function?.arguments || '{}';
+
+      // 检查是否已设置自动确认
+      const isAutoConfirmed = localStorage.getItem(`auto_confirm_${functionName}`) === 'true';
+
+      // 如果已设置自动确认，则直接执行函数调用而不显示确认对话框
+      if (isAutoConfirmed) {
+        console.log(`函数 ${functionName} 已设置自动确认，直接执行`);
+        callContainer.dataset.callData = JSON.stringify(data);
+        callContainer.dataset.functionName = functionName;
+        chatMessages.appendChild(callContainer);
+        // 自动确认执行
+        setTimeout(() => handleFunctionConfirmation(callContainer, true), 100);
+        return callContainer;
+      }
 
       try {
         // 尝试解析参数为JSON对象，以便美化显示
@@ -1204,8 +1218,32 @@ const chatModule = (() => {
 
         if (alwaysConfirmBtn) {
           alwaysConfirmBtn.addEventListener('click', () => {
-            // 可以设置一个标志，今后自动确认此类函数调用
+            // 保存自动确认设置到localStorage
             localStorage.setItem(`auto_confirm_${functionName}`, 'true');
+
+            // 发送到后端记录
+            fetch(`${API_BASE_URL}/sessions/${sessionId}/auto-confirm`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'X-Session-ID': sessionId,
+              },
+              body: JSON.stringify({
+                functionName: functionName,
+              }),
+            })
+              .then(response => response.json())
+              .then(data => {
+                if (data.success) {
+                  console.log(`已设置函数 ${functionName} 为自动确认`);
+                } else {
+                  console.error('设置自动确认失败:', data.error);
+                }
+              })
+              .catch(error => {
+                console.error('保存自动确认设置失败:', error);
+              });
+
             handleFunctionConfirmation(callContainer, true);
           });
         }
@@ -1354,27 +1392,23 @@ const chatModule = (() => {
       if (!callsData || !callsData.length) throw new Error('无效的函数调用数据');
 
       // 执行函数调用
-      const currentSessionId = sessionId;
-      if (!currentSessionId) throw new Error('会话无效');
+      if (!sessionId) throw new Error('会话无效');
 
       try {
         // 尝试调用新的API
         console.log('尝试调用execute-function API...');
         // 注意：后端需要实现此API端点来处理用户确认后的函数调用
         // 该API应接收函数调用数据，执行函数，并返回结果和可能的模型最终回答
-        const response = await fetch(
-          `${API_BASE_URL}/sessions/${currentSessionId}/execute-function`,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Session-ID': currentSessionId,
-            },
-            body: JSON.stringify({
-              function_calls: callsData,
-            }),
+        const response = await fetch(`${API_BASE_URL}/sessions/${sessionId}/execute-function`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Session-ID': sessionId,
           },
-        );
+          body: JSON.stringify({
+            function_calls: callsData,
+          }),
+        });
 
         if (!response.ok) {
           // 如果API不存在或返回错误，我们尝试使用旧的调用方式
@@ -1489,7 +1523,7 @@ const chatModule = (() => {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
-                'X-Session-ID': currentSessionId,
+                'X-Session-ID': sessionId,
               },
               body: JSON.stringify({
                 tool: functionName,
@@ -1595,12 +1629,12 @@ const chatModule = (() => {
           try {
             console.log('将工具结果发送给AI生成最终回答...');
             const finalResponse = await fetch(
-              `${API_BASE_URL}/sessions/${currentSessionId}/tool-results`,
+              `${API_BASE_URL}/sessions/${sessionId}/tool-results`,
               {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
-                  'X-Session-ID': currentSessionId,
+                  'X-Session-ID': sessionId,
                 },
                 body: JSON.stringify({
                   function_calls: callsData,
