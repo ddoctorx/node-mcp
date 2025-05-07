@@ -168,7 +168,13 @@ function convertMcpToolsToOpenAIFormat(mcpTools) {
 }
 
 // 处理OpenAI的函数调用响应
-async function handleFunctionCalling(response, sessionId, mcpSessions, callMcpTool) {
+async function handleFunctionCalling(
+  response,
+  sessionId,
+  mcpSessions,
+  callMcpTool,
+  autoExecuteFunctions = true,
+) {
   const requestId = uuidv4();
 
   if (!response.choices || !response.choices[0]) {
@@ -181,6 +187,21 @@ async function handleFunctionCalling(response, sessionId, mcpSessions, callMcpTo
   // 如果有工具调用
   if (message.tool_calls && message.tool_calls.length > 0) {
     functionCalling.detected(requestId, message.tool_calls);
+
+    // 如果不自动执行函数调用，则直接返回函数调用信息
+    if (!autoExecuteFunctions) {
+      logger.info(`不自动执行函数调用，返回函数调用信息`, {
+        sessionId,
+        requestId,
+        callCount: message.tool_calls.length,
+      });
+
+      return {
+        type: 'function_call',
+        calls: message.tool_calls,
+        results: [],
+      };
+    }
 
     // 处理所有的工具调用
     const results = [];

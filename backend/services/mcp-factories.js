@@ -796,7 +796,23 @@ async function createStdioMcpFactory(config, instanceId) {
           logger.info(`检测到Git克隆操作，将创建工作目录`);
 
           try {
-            // 为每个仓库实例创建唯一的工作目录
+            // 获取仓库URL
+            const cloneIndex = setupArgs.indexOf('clone');
+            let repoUrl = '';
+            if (cloneIndex >= 0 && cloneIndex + 1 < setupArgs.length) {
+              repoUrl = setupArgs[cloneIndex + 1];
+            } else {
+              throw new Error('Git clone命令缺少仓库URL');
+            }
+
+            // 根据仓库URL生成唯一目录名
+            const repoUrlHash = require('crypto')
+              .createHash('md5')
+              .update(repoUrl)
+              .digest('hex')
+              .substring(0, 8);
+
+            // 为每个仓库创建唯一的工作目录
             const reposBasePath = path.join(__dirname, '../../repos');
 
             // 确保基础目录存在
@@ -804,15 +820,189 @@ async function createStdioMcpFactory(config, instanceId) {
               fs.mkdirSync(reposBasePath, { recursive: true });
             }
 
-            // 使用实例ID创建唯一的仓库目录
-            workingDir = path.join(reposBasePath, instanceId);
-            logger.info(`创建Git仓库工作目录: ${workingDir}`);
+            // 使用URL哈希创建目录名，便于识别和复用
+            workingDir = path.join(reposBasePath, repoUrlHash);
+            logger.info(`为仓库 ${repoUrl} 创建工作目录: ${workingDir}`);
 
-            // 创建目录
-            fs.mkdirSync(workingDir, { recursive: true });
+            // 检查目录是否已存在
+            const dirExists = fs.existsSync(workingDir);
+
+            if (dirExists) {
+              logger.info(`检测到仓库 ${repoUrl} 之前已克隆，将进行复用或更新`);
+
+              // 设置工作目录
+              config.workingDir = workingDir;
+
+              // 首先检查现有目录是否是有效的Git仓库，防止之前部分克隆或者错误导致仓库损坏
+              logger.info(`检查目录 ${workingDir} 是否为有效Git仓库`);
+
+              try {
+                // 执行异步命令检查
+                const isGitRepoCheck = spawn('git', ['rev-parse', '--is-inside-work-tree'], {
+                  cwd: workingDir,
+                  shell: true,
+                });
+
+                const checkResult = await new Promise((resolve, reject) => {
+                  let output = '';
+                  let errorOutput = '';
+
+                  isGitRepoCheck.stdout.on('data', data => {
+                    output += data.toString().trim();
+                  });
+
+                  isGitRepoCheck.stderr.on('data', data => {
+                    errorOutput += data.toString().trim();
+                  });
+
+                  isGitRepoCheck.on('exit', code => {
+                    if (code === 0 && output === 'true') {
+                      resolve(true); // 是有效的Git仓库
+                    } else {
+                      resolve(false); // 不是有效的Git仓库
+                    }
+                  });
+
+                  isGitRepoCheck.on('error', err => {
+                    reject(err);
+                  });
+                });
+
+                if (checkResult) {
+                  logger.info(`目录 ${workingDir} 是有效的Git仓库，执行git pull更新`);
+
+                  // 是有效的Git仓库，执行pull更新
+                  setupArgs = ['pull'];
+
+                  // 检查是否有分支信息
+                  const checkRemoteCmd = spawn('git', ['remote', '-v'], {
+                    cwd: workingDir,
+                    shell: true,
+                  });
+
+                  const remoteInfo = await new Promise(resolve => {
+                    let output = '';
+                    checkRemoteCmd.stdout.on('data', data => {
+                      output += data.toString();
+                    });
+
+                    checkRemoteCmd.on('exit', () => {
+                      resolve(output);
+                    });
+                  });
+
+                  // 检查remote是否与当前URL匹配
+                  if (!remoteInfo.includes(repoUrl)) {
+                    logger.info(`仓库远程URL不匹配，设置正确的远程地址: ${repoUrl}`);
+                    // 设置正确的远程地址
+                    setupArgs = ['remote', 'set-url', 'origin', repoUrl];
+
+                    // 创建一个执行远程设置和随后pull的辅助函数
+                    const setupRemoteAndPull = async () => {
+                      const setRemoteProcess = spawn('git', setupArgs, {
+                        cwd: workingDir,
+                        shell: true,
+                      });
+
+                      await new Promise(resolve => {
+                        setRemoteProcess.on('exit', code => {
+                          if (code === 0) {
+                            logger.info(`成功设置远程地址`);
+                          } else {
+                            logger.warn(`设置远程地址失败，代码: ${code}`);
+                          }
+                          resolve();
+                        });
+                      });
+
+                      // 然后执行pull
+                      logger.info(`执行git pull`);
+                      setupArgs = ['pull'];
+                    };
+
+                    // 执行远程设置和pull
+                    await setupRemoteAndPull();
+                  }
+                } else {
+                  logger.warn(`目录 ${workingDir} 不是有效的Git仓库，将移除并重新克隆`);
+
+                  // 不是有效的Git仓库，需要删除目录并重新克隆
+                  try {
+                    // 递归删除目录
+                    const { execSync } = require('child_process');
+                    if (process.platform === 'win32') {
+                      execSync(`rmdir /s /q "${workingDir}"`);
+                    } else {
+                      execSync(`rm -rf "${workingDir}"`);
+                    }
+
+                    // 重新创建目录
+                    fs.mkdirSync(workingDir, { recursive: true });
+
+                    // 还原为原始clone命令
+                    logger.info(`目录已重建，执行原始克隆命令`);
+
+                    // 检查是否已经指定了目标目录
+                    const repoUrlIndex = cloneIndex + 1;
+
+                    // 确保命令中有工作目录
+                    if (
+                      repoUrlIndex + 1 < setupArgs.length &&
+                      !setupArgs[repoUrlIndex + 1].startsWith('-')
+                    ) {
+                      setupArgs[repoUrlIndex + 1] = workingDir;
+                    } else {
+                      setupArgs.splice(repoUrlIndex + 1, 0, workingDir);
+                    }
+                  } catch (rmError) {
+                    logger.error(`移除无效Git仓库目录失败: ${rmError.message}`);
+                    throw new Error(`无法清理现有目录: ${rmError.message}`);
+                  }
+                }
+              } catch (gitCheckError) {
+                logger.error(`检查Git仓库状态失败: ${gitCheckError.message}`);
+
+                // 出错情况下，尝试直接使用pull
+                logger.info(`尝试直接执行git pull`);
+                setupArgs = ['pull'];
+              }
+
+              logger.info(
+                `最终执行命令: ${setupCommand} ${setupArgs.join(' ')} (在目录 ${workingDir} 中)`,
+              );
+            } else {
+              // 如果目录不存在，创建目录并执行正常克隆
+              fs.mkdirSync(workingDir, { recursive: true });
+
+              // 检查是否已经指定了目标目录
+              const repoUrlIndex = cloneIndex + 1;
+              let hasTargetDir = false;
+
+              if (
+                repoUrlIndex + 1 < setupArgs.length &&
+                !setupArgs[repoUrlIndex + 1].startsWith('-')
+              ) {
+                // 已有目标目录，替换为我们的工作目录
+                setupArgs[repoUrlIndex + 1] = workingDir;
+                hasTargetDir = true;
+              }
+
+              if (!hasTargetDir) {
+                // 没有目标目录，添加我们的工作目录
+                setupArgs.splice(repoUrlIndex + 1, 0, workingDir);
+              }
+
+              logger.info(`目录不存在，执行克隆: ${setupCommand} ${setupArgs.join(' ')}`);
+            }
 
             // 修改运行命令的工作目录
             config.workingDir = workingDir;
+
+            // 保存仓库URL信息到环境变量，方便后续签名和区分
+            if (!config.env) config.env = {};
+            config.env.MCP_REPO_URL = repoUrl;
+            config.env.MCP_REPO_HASH = repoUrlHash;
+
             logger.info(`将设置MCP命令工作目录为: ${workingDir}`);
           } catch (dirError) {
             logger.error(`创建仓库工作目录失败: ${dirError.message}`);

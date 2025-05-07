@@ -46,6 +46,137 @@ let mcpList = [];
       font-size: 12px;
       overflow-x: auto;
     }
+    .function-confirmation {
+      background-color: #f8f9fa;
+      border-radius: 4px;
+      padding: 12px;
+      margin-bottom: 10px;
+      width: 100%;
+    }
+    .function-confirmation-needed {
+      border: 3px solid #dc3545;
+      border-radius: 6px;
+      padding: 15px;
+      margin: 15px 0;
+      background-color: #fff8f8;
+      max-width: 100%;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+      position: relative;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0% {
+        box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.4);
+      }
+      70% {
+        box-shadow: 0 0 0 10px rgba(220, 53, 69, 0);
+      }
+      100% {
+        box-shadow: 0 0 0 0 rgba(220, 53, 69, 0);
+      }
+    }
+    .confirmation-message {
+      color: #dc3545;
+      margin-bottom: 15px;
+      font-weight: 500;
+    }
+    .confirmation-message h3 {
+      margin: 0 0 10px 0;
+      font-size: 18px;
+      color: #dc3545;
+      font-weight: bold;
+    }
+    .function-params-preview {
+      background-color: #f8f9fa;
+      border: 1px solid #dee2e6;
+      border-radius: 4px;
+      padding: 10px;
+      margin-top: 10px;
+    }
+    .function-params-preview pre {
+      margin: 5px 0 0 0;
+      white-space: pre-wrap;
+      font-size: 13px;
+      background-color: #f1f1f1;
+      padding: 8px;
+      border-radius: 3px;
+      max-height: 150px;
+      overflow-y: auto;
+    }
+    .confirmation-buttons {
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+      margin-top: 15px;
+    }
+    .always-confirm-btn, .confirm-once-btn, .reject-btn {
+      padding: 8px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-weight: 500;
+      transition: all 0.3s;
+      font-size: 14px;
+    }
+    .always-confirm-btn, .confirm-once-btn {
+      background-color: transparent;
+      border: 1px solid #dc3545;
+      color: #dc3545;
+    }
+    .reject-btn {
+      background-color: transparent;
+      border: 1px solid #6c757d;
+      color: #6c757d;
+    }
+    .always-confirm-btn:hover, .confirm-once-btn:hover {
+      background-color: #dc3545;
+      color: white;
+    }
+    .reject-btn:hover {
+      background-color: #6c757d;
+      color: white;
+    }
+    .function-executing {
+      background-color: #e9ecef;
+      color: #495057;
+      padding: 8px;
+      border-radius: 4px;
+      margin-bottom: 8px;
+    }
+    .function-error {
+      background-color: #f8d7da;
+      color: #721c24;
+      padding: 8px;
+      border-radius: 4px;
+      margin-bottom: 8px;
+    }
+    .function-rejection {
+      background-color: #f8d7da;
+      color: #721c24;
+      padding: 8px;
+      border-radius: 4px;
+      margin-bottom: 8px;
+    }
+    .function-call-item {
+      margin-bottom: 15px;
+      padding: 10px;
+      background-color: #f8f9fa;
+      border: 1px solid #dee2e6;
+      border-radius: 4px;
+    }
+    .function-name {
+      font-weight: bold;
+      margin-bottom: 5px;
+      color: #007bff;
+    }
+    .function-params, .function-result {
+      white-space: pre-wrap;
+      background-color: #f1f1f1;
+      padding: 8px;
+      border-radius: 3px;
+      font-size: 13px;
+      margin-top: 5px;
+      overflow-x: auto;
+    }
   `;
   document.head.appendChild(style);
 })();
@@ -97,12 +228,15 @@ const MCP_PRESETS = {
   },
 };
 
-// 事件总线模块
+// 事件总线模块 - 用于组件间通信
 const eventBus = (() => {
   const events = {};
 
   function init() {
-    // 初始化事件总线
+    return {
+      on,
+      emit,
+    };
   }
 
   function on(eventName, callback) {
@@ -113,10 +247,9 @@ const eventBus = (() => {
   }
 
   function emit(eventName, data) {
-    if (events[eventName]) {
-      events[eventName].forEach(callback => {
-        callback(data);
-      });
+    const callbacks = events[eventName];
+    if (callbacks) {
+      callbacks.forEach(callback => callback(data));
     }
   }
 
@@ -458,15 +591,106 @@ const mcpManager = (() => {
 
     toastManager.showToast(`正在重新连接 ${mcp.name}...`, 'info');
 
-    return addMcp(payload)
-      .then(updatedMcp => {
-        toastManager.showToast(`${mcp.name} 已重新连接`, 'success');
-        return updatedMcp;
+    // 首先断开指定的MCP连接
+    return deleteMcp(mcp)
+      .then(() => {
+        // 然后重新连接这个特定的MCP
+        return fetch(`${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/mcp`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Session-ID': sessionId,
+          },
+          body: JSON.stringify(payload),
+        });
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`重新连接失败: ${response.status} ${response.statusText}`);
+        }
+        return response.json();
+      })
+      .then(data => {
+        if (data.success) {
+          // 更新单个MCP实例而不是重新加载整个列表
+          return loadMcpList().then(updatedList => {
+            // 找到当前重新连接的MCP
+            const updatedMcp = updatedList.find(m => m.name === mcp.name);
+            toastManager.showToast(`${mcp.name} 已重新连接`, 'success');
+
+            // 只更新页面上对应的MCP卡片
+            updateSingleMcpCard(updatedMcp);
+
+            return updatedMcp;
+          });
+        } else {
+          throw new Error(data.error || '重新连接失败');
+        }
       })
       .catch(error => {
         toastManager.showToast(`重新连接 ${mcp.name} 失败: ${error.message}`, 'error');
         throw error;
       });
+  }
+
+  // 添加一个新函数来更新单个MCP卡片，而不是整个列表
+  function updateSingleMcpCard(mcp) {
+    if (!mcp) return;
+
+    // 查找对应的MCP卡片
+    const mcpCard = document.querySelector(`.mcp-card[data-mcp-name="${mcp.name}"]`);
+    if (!mcpCard) return;
+
+    // 更新状态显示
+    const statusValue = mcpCard.querySelector('.status-value');
+    if (statusValue) {
+      statusValue.className = `status-value ${
+        mcp.status === 'connected' || mcp.status === 'ready'
+          ? 'status-running'
+          : mcp.status === 'disconnected'
+          ? 'status-disconnecting'
+          : 'status-error'
+      }`;
+
+      statusValue.textContent =
+        mcp.status === 'connected' || mcp.status === 'ready'
+          ? '运行中'
+          : mcp.status === 'disconnected'
+          ? '断开中'
+          : '异常';
+    }
+
+    // 更新工具列表
+    const toolsList = mcpCard.querySelector('.tools-list');
+    if (toolsList) {
+      // 确保mcp.tools是一个数组
+      const tools = Array.isArray(mcp.tools) ? mcp.tools : [];
+
+      if (tools.length > 0) {
+        toolsList.innerHTML = tools
+          .map(
+            tool => `
+            <div class="tool-item" onclick="showToolDialog('${mcp.name}', '${tool.name}')">
+              <div class="tool-name">${tool.name}</div>
+              <div class="tool-description">${tool.description || '无描述'}</div>
+            </div>
+          `,
+          )
+          .join('');
+      } else {
+        toolsList.innerHTML = '<div class="no-tools">无可用工具</div>';
+      }
+    }
+
+    // 更新卡片类
+    if (mcp.status === 'disconnected') {
+      mcpCard.classList.add('disconnecting');
+    } else {
+      mcpCard.classList.remove('disconnecting');
+    }
+
+    // 触发精确的事件更新
+    eventBus.emit('mcp-updated', mcp);
   }
 
   function deleteMcp(mcp) {
@@ -608,6 +832,14 @@ const chatModule = (() => {
 
     // 注册MCP连接/断开事件监听
     eventBus.on('mcps-updated', checkChatAvailability);
+    eventBus.on('mcp-updated', function (mcp) {
+      // 单个MCP更新，检查聊天可用性
+      checkChatAvailability();
+    });
+    eventBus.on('mcp-removed', function (mcpName) {
+      // 单个MCP被移除，检查聊天可用性
+      checkChatAvailability();
+    });
     eventBus.on('session-changed', onSessionChanged);
   }
 
@@ -627,9 +859,11 @@ const chatModule = (() => {
     const mcps = mcpManager.getAllMcps();
 
     if (Object.keys(mcps).length > 0) {
+      // 至少有一个MCP连接
       enableChat();
     } else {
-      disableChat('等待连接MCP服务');
+      // 没有连接的MCP
+      disableChat('请连接至少一个MCP服务以开始聊天');
     }
   }
 
@@ -743,15 +977,21 @@ const chatModule = (() => {
       // 添加当前消息
       messages.push({ role: 'user', content: message });
 
+      // 构建请求体，明确告知后端不要自动执行函数调用
+      const requestBody = {
+        message: messages,
+        autoExecuteFunctions: false, // 明确告诉后端不要自动执行函数调用
+      };
+
+      console.log('发送消息请求体:', JSON.stringify(requestBody));
+
       const response = await fetch(`${API_BASE_URL}/sessions/${currentSessionId}/messages`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'X-Session-ID': currentSessionId,
         },
-        body: JSON.stringify({
-          message: messages,
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       // 移除"思考中"消息
@@ -762,21 +1002,52 @@ const chatModule = (() => {
       }
 
       const data = await response.json();
+      console.log('收到的响应:', JSON.stringify(data));
 
       if (data.success) {
         const responseData = data.response;
+
+        // 根据响应类型处理
         if (responseData.type === 'text') {
           // 普通文本响应
           addAssistantMessage(responseData.content);
         } else if (responseData.type === 'function_call') {
-          // 函数调用结果
-          addFunctionCallInfo(responseData);
+          // 这是真正需要用户确认的函数调用
+          console.log('检测到函数调用请求，显示确认界面');
+          addFunctionCallInfo(responseData, true); // 需要用户确认
         } else if (responseData.type === 'function_result') {
-          // 带有最终回答的函数调用结果
-          addFunctionCallInfo(responseData);
+          // 已经执行了函数调用并有结果，仍然需要确认
+          console.log('检测到函数调用结果，显示确认界面');
+          addFunctionCallInfo(responseData, true); // 修改为需要用户确认
+
           // 添加模型最终回答
           if (responseData.final_response) {
             addAssistantMessage(responseData.final_response);
+          }
+        } else {
+          // 检查是否存在calls或function_calls字段，确定是否需要用户确认
+          const hasCalls = responseData.calls && responseData.calls.length > 0;
+          const hasFunctionCalls =
+            responseData.function_calls && responseData.function_calls.length > 0;
+          const hasResults = responseData.results && responseData.results.length > 0;
+
+          if (hasCalls || hasFunctionCalls) {
+            // 有函数调用请求，总是需要用户确认
+            console.log('检测到函数调用请求（通用格式），显示确认界面');
+            addFunctionCallInfo(responseData, true);
+          } else if (hasResults) {
+            // 虽然有结果，但仍然显示确认界面
+            console.log('检测到函数调用结果（通用格式），显示确认界面');
+            addFunctionCallInfo(responseData, true);
+
+            // 添加模型最终回答（如果有）
+            if (responseData.final_response) {
+              addAssistantMessage(responseData.final_response);
+            }
+          } else {
+            // 其他未知类型的响应
+            console.warn('未知的响应类型:', responseData);
+            addSystemMessage(`收到未知类型的响应: ${JSON.stringify(responseData)}`);
           }
         }
       } else {
@@ -878,7 +1149,7 @@ const chatModule = (() => {
   }
 
   // 添加函数调用信息
-  function addFunctionCallInfo(data) {
+  function addFunctionCallInfo(data, needConfirmation = false) {
     // 兼容后端返回的两种可能格式：calls 或 function_calls
     const callsData = data.calls || data.function_calls;
 
@@ -888,11 +1159,115 @@ const chatModule = (() => {
     const callContainer = document.createElement('div');
     callContainer.className = 'function-calls-container';
 
+    // 强制需要确认 - 修复直接执行函数调用的问题
+    needConfirmation = true; // 无论何种情况，总是需要用户确认
+
+    // 如果需要确认，添加确认按钮和说明
+    if (needConfirmation) {
+      console.log('创建函数调用确认UI');
+      callContainer.classList.add('function-confirmation-needed');
+
+      // 获取函数名称，清晰显示需要调用的是什么函数
+      const functionName = callsData[0]?.function?.name || '未知函数';
+      const functionParams = callsData[0]?.function?.arguments || '{}';
+
+      try {
+        // 尝试解析参数为JSON对象，以便美化显示
+        const paramsObj = JSON.parse(functionParams);
+
+        const confirmationSection = document.createElement('div');
+        confirmationSection.className = 'function-confirmation';
+        confirmationSection.innerHTML = `
+          <div class="confirmation-message">
+            <h3>需要调用 ${functionName}</h3>
+            <div class="function-params-preview">
+              <div>调用参数:</div>
+              <pre>${JSON.stringify(paramsObj, null, 2)}</pre>
+            </div>
+          </div>
+          <div class="confirmation-buttons">
+            <button class="always-confirm-btn">始终同意</button>
+            <button class="confirm-once-btn">同意一次</button>
+            <button class="reject-btn">拒绝</button>
+          </div>
+        `;
+        callContainer.appendChild(confirmationSection);
+
+        // 存储调用数据和ID，以便确认后使用
+        callContainer.dataset.callData = JSON.stringify(data);
+        callContainer.dataset.functionName = functionName;
+
+        // 为按钮添加事件监听
+        const alwaysConfirmBtn = confirmationSection.querySelector('.always-confirm-btn');
+        const confirmOnceBtn = confirmationSection.querySelector('.confirm-once-btn');
+        const rejectBtn = confirmationSection.querySelector('.reject-btn');
+
+        if (alwaysConfirmBtn) {
+          alwaysConfirmBtn.addEventListener('click', () => {
+            // 可以设置一个标志，今后自动确认此类函数调用
+            localStorage.setItem(`auto_confirm_${functionName}`, 'true');
+            handleFunctionConfirmation(callContainer, true);
+          });
+        }
+
+        if (confirmOnceBtn) {
+          confirmOnceBtn.addEventListener('click', () =>
+            handleFunctionConfirmation(callContainer, true),
+          );
+        }
+
+        if (rejectBtn) {
+          rejectBtn.addEventListener('click', () =>
+            handleFunctionConfirmation(callContainer, false),
+          );
+        }
+      } catch (error) {
+        console.error('解析函数参数出错:', error);
+        // 参数解析出错时的回退方案
+        const confirmationSection = document.createElement('div');
+        confirmationSection.className = 'function-confirmation';
+        confirmationSection.innerHTML = `
+          <div class="confirmation-message">
+            <h3>需要调用 ${functionName}</h3>
+          </div>
+          <div class="confirmation-buttons">
+            <button class="confirm-once-btn">同意一次</button>
+            <button class="reject-btn">拒绝</button>
+          </div>
+        `;
+        callContainer.appendChild(confirmationSection);
+
+        // 存储调用数据
+        callContainer.dataset.callData = JSON.stringify(data);
+
+        // 为按钮添加事件监听
+        const confirmOnceBtn = confirmationSection.querySelector('.confirm-once-btn');
+        const rejectBtn = confirmationSection.querySelector('.reject-btn');
+
+        if (confirmOnceBtn) {
+          confirmOnceBtn.addEventListener('click', () =>
+            handleFunctionConfirmation(callContainer, true),
+          );
+        }
+
+        if (rejectBtn) {
+          rejectBtn.addEventListener('click', () =>
+            handleFunctionConfirmation(callContainer, false),
+          );
+        }
+      }
+
+      // 在这里将确认界面添加到聊天窗口，显示给用户
+      chatMessages.appendChild(callContainer);
+      scrollToBottom();
+      return callContainer;
+    }
+
     // 处理每个函数调用
     callsData.forEach((call, index) => {
       // 找到对应的结果
-      const result = data.results.find(r => r.tool_call_id === call.id);
-      if (!call || !result) return;
+      const result = data.results ? data.results.find(r => r.tool_call_id === call.id) : null;
+      if (!call) return;
 
       const callElement = document.createElement('div');
       callElement.className = 'function-call-item';
@@ -911,20 +1286,22 @@ const chatModule = (() => {
         paramsElement.textContent = JSON.stringify(params, null, 2);
         callElement.appendChild(paramsElement);
 
-        // 结果部分
-        const resultElement = document.createElement('pre');
-        resultElement.className = 'function-result';
+        // 结果部分 (如果有结果)
+        if (result) {
+          const resultElement = document.createElement('pre');
+          resultElement.className = 'function-result';
 
-        try {
-          // 尝试解析结果JSON
-          const resultObj = JSON.parse(result.result);
-          resultElement.textContent = JSON.stringify(resultObj, null, 2);
-        } catch (e) {
-          // 如果不是JSON，直接显示结果
-          resultElement.textContent = result.result;
+          try {
+            // 尝试解析结果JSON
+            const resultObj = JSON.parse(result.result);
+            resultElement.textContent = JSON.stringify(resultObj, null, 2);
+          } catch (e) {
+            // 如果不是JSON，直接显示结果
+            resultElement.textContent = result.result;
+          }
+
+          callElement.appendChild(resultElement);
         }
-
-        callElement.appendChild(resultElement);
       } catch (error) {
         const errorElement = document.createElement('div');
         errorElement.className = 'error-message';
@@ -937,6 +1314,325 @@ const chatModule = (() => {
 
     chatMessages.appendChild(callContainer);
     scrollToBottom();
+
+    return callContainer;
+  }
+
+  // 处理用户对函数调用的确认或拒绝
+  async function handleFunctionConfirmation(callContainer, isConfirmed) {
+    if (!callContainer || !callContainer.dataset.callData) return;
+
+    // 删除确认按钮部分
+    const confirmationSection = callContainer.querySelector('.function-confirmation');
+    if (confirmationSection) {
+      confirmationSection.remove();
+    }
+
+    // 如果拒绝，则显示拒绝消息并返回
+    if (!isConfirmed) {
+      const rejectionMsg = document.createElement('div');
+      rejectionMsg.className = 'function-rejection';
+      rejectionMsg.textContent = '您已拒绝此函数调用';
+      callContainer.insertBefore(rejectionMsg, callContainer.firstChild);
+      return;
+    }
+
+    // 移除确认样式
+    callContainer.classList.remove('function-confirmation-needed');
+
+    // 显示执行中状态
+    const loadingMsg = document.createElement('div');
+    loadingMsg.className = 'function-executing';
+    loadingMsg.textContent = '正在执行函数调用...';
+    callContainer.insertBefore(loadingMsg, callContainer.firstChild);
+
+    try {
+      // 获取调用数据
+      const data = JSON.parse(callContainer.dataset.callData);
+      const callsData = data.calls || data.function_calls;
+
+      if (!callsData || !callsData.length) throw new Error('无效的函数调用数据');
+
+      // 执行函数调用
+      const currentSessionId = sessionId;
+      if (!currentSessionId) throw new Error('会话无效');
+
+      try {
+        // 尝试调用新的API
+        console.log('尝试调用execute-function API...');
+        // 注意：后端需要实现此API端点来处理用户确认后的函数调用
+        // 该API应接收函数调用数据，执行函数，并返回结果和可能的模型最终回答
+        const response = await fetch(
+          `${API_BASE_URL}/sessions/${currentSessionId}/execute-function`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Session-ID': currentSessionId,
+            },
+            body: JSON.stringify({
+              function_calls: callsData,
+            }),
+          },
+        );
+
+        if (!response.ok) {
+          // 如果API不存在或返回错误，我们尝试使用旧的调用方式
+          if (response.status === 404) {
+            throw new Error('API不存在，尝试旧方法');
+          }
+          throw new Error(`请求失败: ${response.status} ${response.statusText}`);
+        }
+
+        const result = await response.json();
+
+        // 移除执行中消息
+        loadingMsg.remove();
+
+        if (result.success) {
+          // 清空当前容器内容
+          callContainer.innerHTML = '';
+
+          // 显示函数调用结果
+          const resultData = {
+            calls: callsData,
+            results: result.results,
+          };
+
+          // 创建新的结果容器
+          const resultContainer = document.createElement('div');
+          resultContainer.className = 'function-results';
+
+          // 处理每个函数调用的结果
+          resultData.calls.forEach((call, index) => {
+            const result = resultData.results.find(r => r.tool_call_id === call.id);
+            if (!call) return;
+
+            const callElement = document.createElement('div');
+            callElement.className = 'function-call-item';
+
+            // 函数名称
+            const nameElement = document.createElement('div');
+            nameElement.className = 'function-name';
+            nameElement.textContent = call.function.name;
+            callElement.appendChild(nameElement);
+
+            try {
+              // 参数部分
+              const paramsElement = document.createElement('pre');
+              paramsElement.className = 'function-params';
+              const params = JSON.parse(call.function.arguments || '{}');
+              paramsElement.textContent = JSON.stringify(params, null, 2);
+              callElement.appendChild(paramsElement);
+
+              // 结果部分
+              if (result) {
+                const resultElement = document.createElement('pre');
+                resultElement.className = 'function-result';
+
+                try {
+                  // 尝试解析结果JSON
+                  const resultObj = JSON.parse(result.result);
+                  resultElement.textContent = JSON.stringify(resultObj, null, 2);
+                } catch (e) {
+                  // 如果不是JSON，直接显示结果
+                  resultElement.textContent = result.result;
+                }
+
+                callElement.appendChild(resultElement);
+              }
+            } catch (error) {
+              const errorElement = document.createElement('div');
+              errorElement.className = 'error-message';
+              errorElement.textContent = `解析失败: ${error.message}`;
+              callElement.appendChild(errorElement);
+            }
+
+            resultContainer.appendChild(callElement);
+          });
+
+          // 将结果容器替换原始容器
+          callContainer.parentNode.replaceChild(resultContainer, callContainer);
+
+          // 如果有最终回答，显示它
+          if (result.final_response) {
+            addAssistantMessage(result.final_response);
+          }
+        } else {
+          // 显示错误消息
+          const errorMsg = document.createElement('div');
+          errorMsg.className = 'function-error';
+          errorMsg.textContent = `执行失败: ${result.error || '未知错误'}`;
+          callContainer.insertBefore(errorMsg, callContainer.firstChild);
+        }
+      } catch (apiError) {
+        console.warn('API调用出错:', apiError);
+
+        // 如果API不存在或返回错误，我们使用旧的方式调用单个函数
+        // 对于每个函数调用，直接调用工具API
+        const resultsPromises = callsData.map(async call => {
+          if (!call.function) return null;
+
+          const functionName = call.function.name;
+          let functionParams = {};
+          try {
+            functionParams = JSON.parse(call.function.arguments || '{}');
+          } catch (e) {
+            console.error('解析参数失败:', e);
+          }
+
+          console.log(`回退方案：直接调用工具 ${functionName}`, functionParams);
+
+          try {
+            // 调用工具API
+            const toolResponse = await fetch(`${API_BASE_URL}/tools/execute`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'X-Session-ID': currentSessionId,
+              },
+              body: JSON.stringify({
+                tool: functionName,
+                params: functionParams,
+              }),
+            });
+
+            if (!toolResponse.ok) {
+              throw new Error(`工具执行失败: ${toolResponse.status} ${toolResponse.statusText}`);
+            }
+
+            const toolResult = await toolResponse.json();
+
+            return {
+              tool_call_id: call.id,
+              function_name: functionName,
+              result:
+                typeof toolResult.result === 'object'
+                  ? JSON.stringify(toolResult.result)
+                  : toolResult.result,
+            };
+          } catch (toolError) {
+            console.error(`工具 ${functionName} 执行失败:`, toolError);
+            return {
+              tool_call_id: call.id,
+              function_name: functionName,
+              result: JSON.stringify({ error: toolError.message }),
+            };
+          }
+        });
+
+        // 等待所有工具执行完成
+        const results = await Promise.all(resultsPromises);
+        const validResults = results.filter(r => r !== null);
+
+        // 移除执行中消息
+        loadingMsg.remove();
+
+        if (validResults.length > 0) {
+          // 清空当前容器内容
+          callContainer.innerHTML = '';
+
+          // 显示函数调用结果
+          const resultData = {
+            calls: callsData,
+            results: validResults,
+          };
+
+          // 创建新的结果容器
+          const resultContainer = document.createElement('div');
+          resultContainer.className = 'function-results';
+
+          // 处理每个函数调用的结果
+          resultData.calls.forEach((call, index) => {
+            const result = resultData.results.find(r => r.tool_call_id === call.id);
+            if (!call || !result) return;
+
+            const callElement = document.createElement('div');
+            callElement.className = 'function-call-item';
+
+            // 函数名称
+            const nameElement = document.createElement('div');
+            nameElement.className = 'function-name';
+            nameElement.textContent = call.function.name;
+            callElement.appendChild(nameElement);
+
+            try {
+              // 参数部分
+              const paramsElement = document.createElement('pre');
+              paramsElement.className = 'function-params';
+              const params = JSON.parse(call.function.arguments || '{}');
+              paramsElement.textContent = JSON.stringify(params, null, 2);
+              callElement.appendChild(paramsElement);
+
+              // 结果部分
+              const resultElement = document.createElement('pre');
+              resultElement.className = 'function-result';
+
+              try {
+                // 尝试解析结果JSON
+                const resultObj = JSON.parse(result.result);
+                resultElement.textContent = JSON.stringify(resultObj, null, 2);
+              } catch (e) {
+                // 如果不是JSON，直接显示结果
+                resultElement.textContent = result.result;
+              }
+
+              callElement.appendChild(resultElement);
+            } catch (error) {
+              const errorElement = document.createElement('div');
+              errorElement.className = 'error-message';
+              errorElement.textContent = `解析失败: ${error.message}`;
+              callElement.appendChild(errorElement);
+            }
+
+            resultContainer.appendChild(callElement);
+          });
+
+          // 将结果容器替换原始容器
+          callContainer.parentNode.replaceChild(resultContainer, callContainer);
+
+          // 执行函数调用后，将结果再发送给AI获取最终回答
+          try {
+            console.log('将工具结果发送给AI生成最终回答...');
+            const finalResponse = await fetch(
+              `${API_BASE_URL}/sessions/${currentSessionId}/tool-results`,
+              {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'X-Session-ID': currentSessionId,
+                },
+                body: JSON.stringify({
+                  function_calls: callsData,
+                  results: validResults,
+                }),
+              },
+            );
+
+            if (finalResponse.ok) {
+              const finalData = await finalResponse.json();
+              if (finalData.success && finalData.response) {
+                // 添加AI最终回答
+                addAssistantMessage(finalData.response);
+              }
+            }
+          } catch (finalError) {
+            console.error('获取AI最终回答失败:', finalError);
+          }
+        } else {
+          // 显示错误消息
+          const errorMsg = document.createElement('div');
+          errorMsg.className = 'function-error';
+          errorMsg.textContent = `所有工具执行失败`;
+          callContainer.insertBefore(errorMsg, callContainer.firstChild);
+        }
+      }
+    } catch (error) {
+      // 显示错误信息
+      console.error('执行函数调用失败:', error);
+      loadingMsg.className = 'function-error';
+      loadingMsg.textContent = `执行失败: ${error.message}`;
+    }
   }
 
   // 格式化消息，处理代码块
@@ -985,9 +1681,11 @@ const functionTestModule = (() => {
   const runFunctionTestBtn = document.getElementById('run-function-test');
   const clearFunctionTestBtn = document.getElementById('clear-function-test');
   const functionTestOutput = document.getElementById('function-test-output');
+  const executeTestBtn = document.getElementById('execute-function-test');
 
   // 状态变量
   let isLoading = false;
+  let lastFunctionCallData = null;
 
   // 初始化
   function init() {
@@ -1000,8 +1698,126 @@ const functionTestModule = (() => {
     runFunctionTestBtn.addEventListener('click', runTest);
     clearFunctionTestBtn.addEventListener('click', clearResults);
 
+    // 如果有执行按钮，添加监听器
+    if (executeTestBtn) {
+      executeTestBtn.addEventListener('click', executeLastFunctionCall);
+    } else {
+      // 如果按钮不存在，创建一个
+      const executeBtn = document.createElement('button');
+      executeBtn.id = 'execute-function-test';
+      executeBtn.className = 'btn btn-primary';
+      executeBtn.textContent = '执行函数调用';
+      executeBtn.disabled = true;
+      executeBtn.addEventListener('click', executeLastFunctionCall);
+
+      // 添加到适当位置
+      const testControls = document.querySelector('.test-controls');
+      if (testControls) {
+        testControls.appendChild(executeBtn);
+      }
+    }
+
     // 注册MCP连接/断开事件监听
     eventBus.on('mcps-updated', checkAvailability);
+  }
+
+  // 执行最后一次函数调用
+  async function executeLastFunctionCall() {
+    if (
+      !lastFunctionCallData ||
+      !lastFunctionCallData.calls ||
+      lastFunctionCallData.calls.length === 0
+    ) {
+      addOutputMessage('没有可执行的函数调用', 'error');
+      return;
+    }
+
+    const currentSessionId = sessionManager.getSessionId();
+    if (!currentSessionId) {
+      addOutputMessage('会话ID无效', 'error');
+      return;
+    }
+
+    // 显示执行中状态
+    addOutputMessage('正在执行函数调用...');
+    executeTestBtn.disabled = true;
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/sessions/${currentSessionId}/execute-function`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Session-ID': currentSessionId,
+          },
+          body: JSON.stringify({
+            function_calls: lastFunctionCallData.calls,
+          }),
+        },
+      );
+
+      if (!response.ok) {
+        throw new Error(`请求失败: ${response.status} ${response.statusText}`);
+      }
+
+      const result = await response.json();
+
+      if (result.success) {
+        addOutputMessage('函数调用执行成功', 'success');
+
+        // 显示结果
+        const resultBlock = document.createElement('div');
+        resultBlock.className = 'response-block';
+        resultBlock.innerHTML = '<h4>执行结果:</h4>';
+
+        // 显示每个函数调用的结果
+        result.results.forEach((functionResult, index) => {
+          const resultElement = document.createElement('div');
+          resultElement.className = 'function-result';
+
+          // 尝试格式化JSON结果
+          let formattedResult = '';
+          try {
+            const jsonResult = JSON.parse(functionResult.result);
+            formattedResult = JSON.stringify(jsonResult, null, 2);
+          } catch (e) {
+            formattedResult = functionResult.result;
+          }
+
+          resultElement.innerHTML = `
+            <div class="result-id">结果 #${index + 1}</div>
+            <pre>${formattedResult}</pre>
+          `;
+
+          resultBlock.appendChild(resultElement);
+        });
+
+        functionTestOutput.appendChild(resultBlock);
+
+        // 如果有最终回答，显示它
+        if (result.final_response) {
+          const finalResponseBlock = document.createElement('div');
+          finalResponseBlock.className = 'final-response';
+          finalResponseBlock.innerHTML = `
+            <h4>AI最终回答:</h4>
+            <div class="response-content">${formatMessage(result.final_response)}</div>
+          `;
+          functionTestOutput.appendChild(finalResponseBlock);
+        }
+
+        // 清除最后的函数调用数据
+        lastFunctionCallData = null;
+        executeTestBtn.disabled = true;
+      } else {
+        throw new Error(result.error || '执行失败');
+      }
+    } catch (error) {
+      console.error('执行函数调用失败:', error);
+      addOutputMessage(`执行失败: ${error.message}`, 'error');
+    } finally {
+      executeTestBtn.disabled = !lastFunctionCallData;
+    }
   }
 
   // 检查可用性
@@ -1075,6 +1891,19 @@ const functionTestModule = (() => {
 
       if (data.success) {
         displayTestResult(data.response);
+
+        // 如果是函数调用，保存它并启用执行按钮
+        if (
+          data.response.type === 'function_call' &&
+          data.response.calls &&
+          data.response.calls.length > 0
+        ) {
+          lastFunctionCallData = data.response;
+          if (executeTestBtn) executeTestBtn.disabled = false;
+        } else {
+          lastFunctionCallData = null;
+          if (executeTestBtn) executeTestBtn.disabled = true;
+        }
       } else {
         addOutputMessage(`错误: ${data.error || '未知错误'}`, 'error');
       }
@@ -1092,6 +1921,8 @@ const functionTestModule = (() => {
   // 清除结果
   function clearResults() {
     functionTestOutput.innerHTML = '';
+    lastFunctionCallData = null;
+    if (executeTestBtn) executeTestBtn.disabled = true;
   }
 
   // 添加输出消息
@@ -1163,7 +1994,7 @@ const functionTestModule = (() => {
           }
 
           // 结果
-          const result = response.results.find(r => r.tool_call_id === call.id);
+          const result = response.results && response.results.find(r => r.tool_call_id === call.id);
           if (result) {
             const resultEl = document.createElement('div');
             resultEl.className = 'tool-result';
@@ -3158,23 +3989,43 @@ function deleteMcp(mcp) {
     })
     .then(data => {
       if (data.success) {
-        // 从服务器重新获取MCP列表
-        return mcpManager.loadMcpList().then(updatedList => {
-          // 更新全局 mcpList
-          mcpList = updatedList;
+        // 从MCP列表中移除当前MCP
+        const mcpIndex = mcpList.findIndex(m => m.name === mcp.name);
+        if (mcpIndex !== -1) {
+          mcpList.splice(mcpIndex, 1);
+        }
 
-          // 渲染更新后的MCP列表
-          renderMcpList();
+        // 查找并移除页面上对应的MCP卡片
+        const mcpCard = document.querySelector(`.mcp-card[data-mcp-name="${mcp.name}"]`);
+        if (mcpCard) {
+          mcpCard.remove();
+        }
 
-          // 重新加载实例列表，更新"已连接"状态
-          loadAllMcpInstances();
+        // 更新MCP计数
+        const mcpCountSpan = document.getElementById('mcp-count');
+        if (mcpCountSpan) {
+          mcpCountSpan.textContent = mcpList.length;
+        }
 
-          // 触发事件通知其他组件
-          eventBus.emit('mcps-updated', mcpList);
+        // 如果没有MCP了，显示空状态
+        const emptyState = document.getElementById('empty-state');
+        const mcpListContainer = document.getElementById('mcp-list');
 
-          toastManager.showToast(`${mcp.name} 已移除`, 'success');
-          return true;
-        });
+        if (mcpList.length === 0 && emptyState && mcpListContainer) {
+          emptyState.style.display = 'flex';
+          mcpListContainer.style.display = 'none';
+        }
+
+        // 触发事件通知其他组件
+        eventBus.emit('mcp-removed', mcp.name);
+
+        // 检查聊天可用性
+        if (chatModule && typeof chatModule.checkChatAvailability === 'function') {
+          chatModule.checkChatAvailability();
+        }
+
+        toastManager.showToast(`${mcp.name} 已移除`, 'success');
+        return true;
       } else {
         throw new Error(data.error || `移除 ${mcp.name} 失败`);
       }

@@ -38,6 +38,13 @@ function setupRoutes(app) {
   app.post('/api/sessions/:sessionId/tools', validateSession, chatController.callTool);
   app.get('/api/sessions/:sessionId/tools', validateSession, chatController.getAvailableTools);
 
+  // 用户确认后执行函数调用的路由
+  app.post(
+    '/api/sessions/:sessionId/execute-function',
+    validateSession,
+    chatController.executeFunction,
+  );
+
   // MCP相关路由
   app.post('/api/sessions/:sessionId/mcp', validateSession, mcpController.connectMcp);
   app.delete('/api/sessions/:sessionId/mcp', validateSession, mcpController.disconnectMcp);

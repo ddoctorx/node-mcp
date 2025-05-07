@@ -277,3 +277,87 @@ fetch('/api/mcp/predefined/update', {
 ## 许可证
 
 MIT
+
+# MCP 工具调用确认功能
+
+## 前端实现
+
+前端已经实现了函数调用确认功能，当模型返回需要调用 MCP 工具时，会显示确认对话框，用户可以选择"始终统一"或"同意一次"。
+
+## 后端 API 需求
+
+后端需要实现以下 API 端点，以支持前端的确认功能：
+
+### 1. 发送消息时，支持`autoExecuteFunctions`参数
+
+当 frontend 发送消息时，会传递`autoExecuteFunctions: false`参数，后端需要处理这个参数，当参数为 false 时，不自动执行函数调用，而是将函数调用信息返回给前端。
+
+示例请求：
+
+```json
+{
+  "message": [...],
+  "autoExecuteFunctions": false
+}
+```
+
+### 2. 实现执行函数调用的 API 端点
+
+创建一个新的 API 端点，用于处理用户确认后的函数调用。
+
+**API 路径**：`/api/sessions/:sessionId/execute-function`
+
+**请求方法**：POST
+
+**请求头**：
+
+- `Content-Type: application/json`
+- `X-Session-ID: <sessionId>`
+
+**请求体**：
+
+```json
+{
+  "function_calls": [
+    {
+      "id": "call_abc123",
+      "type": "function",
+      "function": {
+        "name": "function_name",
+        "arguments": "{\"param1\": \"value1\", \"param2\": \"value2\"}"
+      }
+    }
+  ]
+}
+```
+
+**响应体**：
+
+```json
+{
+  "success": true,
+  "results": [
+    {
+      "tool_call_id": "call_abc123",
+      "result": "{\"result\": \"function result data\"}"
+    }
+  ],
+  "final_response": "可选的模型最终回答"
+}
+```
+
+## 实现步骤
+
+1. 在后端消息处理逻辑中，检查`autoExecuteFunctions`参数
+2. 如果参数为 false，返回函数调用信息而不执行
+3. 创建新的 API 端点`/api/sessions/:sessionId/execute-function`，接收函数调用请求
+4. 执行函数调用并返回结果
+5. 如果需要，返回模型的最终回答
+
+```
+根据代码，清理空闲实例的流程是这样的：
+1、前端点击"cleanup-idle-instances"按钮时，会发送POST请求到/api/lifecycle/cleanup接口
+2、后端由lifecycle-controller.js的cleanupIdleInstances函数处理请求
+3、该函数调用生命周期管理器的runCleanupNow()方法执行清理
+4、清理逻辑在lifecycle-manager.js的cleanupIdleInstances函数中实现
+```
